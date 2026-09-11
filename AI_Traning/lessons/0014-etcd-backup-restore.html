@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0014 — etcd 備份與還原</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 4 · 對應考綱：<a href="../reference/cka-domain-map.html">Cluster Architecture, Installation &amp; Configuration（25%）</a> · 需時約 30 分鐘</p>
+
+<h1>etcd 備份與還原</h1>
+
+<p>0001 埋過伏筆：<a href="../reference/glossary.html">etcd</a> 是存放「<strong>所有叢集狀態</strong>」的一致鍵值庫——Deployment 的期望狀態、Secret、Namespace 全在裡面。etcd 掛了等於叢集的記憶沒了，所以 CKA 必考「備份與還原」這一整套：<code>snapshot save</code>（存）、<code>snapshot status</code>（驗）、<code>snapshot restore</code>（還原）。本課先在本機 Calico 叢集把「存 + 驗」跑一遍；「還原」的完整手術在 Killercoda 的 VM 上做（考試環境就是 VM，路徑與本機 kind 不同）。</p>
+
+<h2>先建立正確心智：snapshot 是什麼、restore 在幹嘛</h2>
+<ul>
+  <li><strong>snapshot save</strong>：把 etcd 整個資料庫（連同 member 狀態）倒成單一檔案。對「還活著的 etcd」直接存即可，不必停服務。</li>
+  <li><strong>snapshot status</strong>：讀 snapshot 檔印出 metadata（revision、總 key 數、db 大小）——備份完「驗得出來是好的」才算數。</li>
+  <li><strong>snapshot restore</strong>：把 snapshot 檔「解壓」成一個<strong>全新的資料目錄</strong>。注意——它<strong>不是原地復活舊目錄</strong>，而是產生一個新的 member 資料夾，然後你把它接回去給 etcd 用。所以還原流程的本質是：<strong>新資料目錄接回 + 重啟 etcd</strong>。</li>
+</ul>
+<p>考試必背路徑：etcd 是 static pod，manifest 在 <code>/etc/kubernetes/manifests/etcd.yaml</code>，資料目錄在 <code>/var/lib/etcd</code>。憑證三件套固定放在 <code>/etc/kubernetes/pki/etcd/</code>：<code>ca.crt</code>（CA）、<code>server.crt</code>／<code>server.key</code>（etcd 自己）。</p>
+
+<div class="terminal box">
+  <div class="box-title">三條指令模板（背起來）</div>
+  <pre><span class="comment"># 存</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 \</span>
+<span class="prompt">  --cacert=/etc/kubernetes/pki/etcd/ca.crt \</span>
+<span class="prompt">  --cert=/etc/kubernetes/pki/etcd/server.crt \</span>
+<span class="prompt">  --key=/etc/kubernetes/pki/etcd/server.key \</span>
+<span class="prompt">  snapshot save /backup/etcd-snapshot.db</span>
+
+<span class="comment"># 驗</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl snapshot status /backup/etcd-snapshot.db --write-out=table</span>
+
+<span class="comment"># 還原（產生新資料目錄 /var/lib/etcd-from-backup）</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl snapshot restore /backup/etcd-snapshot.db \</span>
+<span class="prompt">  --data-dir=/var/lib/etcd-from-backup</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">環境提醒：ETCDCTL_API=3</div>
+  <p>etcdctl 對 v3 API 有「相容模式」的歷史包袱，考試慣例在指令前加 <code>ETCDCTL_API=3</code> 確保走 v3。加上無害、漏了可能踩雷——照抄就對了。endpoints 一律 <code>https://127.0.0.1:2379</code>（本機的 etcd 就聽這裡）。</p>
+</div>
+
+<h2>實作 A：在本機 kind 叢集存一份 snapshot</h2>
+<p>kind 的 etcd 是跑在 control-plane 節點上的 static pod（名字 <code>etcd-kind-control-plane</code>）。我們在 pod 裡執行 etcdctl，再把檔案拷出來。先製造一點「值得備份的狀態」：</p>
+
+<div class="terminal box">
+  <div class="box-title">先做點事，讓 snapshot 有內容</div>
+  <pre><span class="comment"># 1. 隨便建一個 namespace 當作「要被備份的狀態」</span>
+<span class="prompt">kubectl create ns backup-me</span>
+<span class="prompt">kubectl create deployment hello-backup --image=nginx:1.25 --replicas=2</span>
+<span class="prompt">kubectl rollout status deployment/hello-backup</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">找到 etcd pod，執行 snapshot save</div>
+  <pre><span class="comment"># 2. etcd static pod 的名字 = etcd-&lt;節點名&gt;</span>
+<span class="prompt">kubectl get pods -n kube-system | grep etcd</span>
+<span class="comment">#    etcd-kind-control-plane</span>
+
+<span class="comment"># 3. 在 pod 內執行 etcdctl snapshot save（三憑證 + 本機端點）
+#    檔案要寫進 /var/lib/etcd（這是 hostPath，節點容器才讀得到、docker cp 才拷得出）</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- sh -c 'ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key snapshot save /var/lib/etcd/etcd-snapshot.db'</span>
+<span class="comment">#    成功會印 "Snapshot saved at /var/lib/etcd/etcd-snapshot.db"</span>
+
+<span class="comment"># 4. 確認檔案存在與大小</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- ls -lh /var/lib/etcd/etcd-snapshot.db</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">拷到 host、用 snapshot status 驗證</div>
+  <pre><span class="comment"># 5. 從節點容器拷回 WSL2 host（docker 對 kind 節點直接用；路徑在 hostPath 裡才拷得到）</span>
+<span class="prompt">docker cp kind-control-plane:/var/lib/etcd/etcd-snapshot.db ./etcd-snapshot.db</span>
+<span class="prompt">ls -lh etcd-snapshot.db</span>
+
+<span class="comment"># 6. 在 pod 內驗證 snapshot 可讀（存完一定要驗——壞檔沒人想還原時才發現）</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- sh -c 'ETCDCTL_API=3 etcdctl snapshot status /var/lib/etcd/etcd-snapshot.db --write-out=table'</span>
+<span class="comment">#    table 會印 HASH / REVISION / TOTAL KEYS / TOTAL SIZE</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">預演 restore：還原到一個暫存目錄（不動正式資料）</div>
+  <pre><span class="comment"># 7. 把 snapshot 還原成「新資料目錄」到 /tmp——證明這份備份還原得出來</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- sh -c 'ETCDCTL_API=3 etcdctl snapshot restore /var/lib/etcd/etcd-snapshot.db --data-dir=/tmp/restored-etcd'</span>
+<span class="comment">#    成功會印 "Restored a new etcd database..."</span>
+
+<span class="comment"># 8. 看看還原出來的目錄結構（member/ 就是 etcd 的資料夾）</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- ls /tmp/restored-etcd</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- ls /tmp/restored-etcd/member</span>
+
+<span class="comment"># 9. 收掉暫存與 snapshot（備份檔 host 上留著）</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- rm -rf /tmp/restored-etcd /var/lib/etcd/etcd-snapshot.db</span>
+<span class="prompt">kubectl delete ns backup-me</span>
+<span class="prompt">kubectl delete deployment hello-backup</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 6 步的 table 是「備份品質保證」：REVISION 代表 etcd 寫入到哪一版、TOTAL KEYS 是 key 總數。第 7–8 步先看懂 restore 的本質：<strong>它把 snapshot「吐」成一個新的資料目錄</strong>（含 member 子目錄），不會動你原本在跑的 etcd。真正切換只是把 etcd 指向新目錄重啟——下面實作 B 就是那台手術。</p>
+</div>
+
+<h2>實作 B：完整還原手術（在 Killercoda VM 上演練）</h2>
+<p>本機 kind 的 etcd 跟正式叢集長得不同（manifest、kubelet 都在節點容器裡），真正的還原手術在<strong>VM 型叢集</strong>上做才有意義——考試環境也正是 VM。開一個 Killercoda 的 kubeadm／多節點場景，把下面整套跑過一次（約 15 分鐘）。</p>
+
+<div class="terminal box">
+  <div class="box-title">完整還原流程（VM 版；只可意會不可省略）</div>
+  <pre><span class="comment"># step 0 — 開 Killercoda（killercoda.com），挑一個「kubeadm、含 control-plane」的場景
+#    本段假設你在該 VM 的 root／sudo 環境</span>
+
+<span class="comment"># step 1 — （第一次練習時先）存一份現在狀態的備份
+#    若 VM 的 host 沒裝 etcdctl（kubeadm 不保證會裝）：把底下每行 etcdctl
+#    包成 kubectl -n kube-system exec -it etcd-$(hostname) -- sh -c '…' 在 pod 內跑，
+#    憑證路徑與指令內容完全一樣——本課實作 A 就是這個做法</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key snapshot save /root/etcd-snapshot.db</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl snapshot status /root/etcd-snapshot.db --write-out=table</span>
+
+<span class="comment"># step 2 — 還原成新資料目錄（別放在舊的 /var/lib/etcd 上）</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl snapshot restore /root/etcd-snapshot.db --data-dir=/var/lib/etcd-from-backup</span>
+
+<span class="comment"># step 3 — 停掉 etcd static pod：把 manifest 移開，kubelet 就會收掉 etcd</span>
+<span class="prompt">mv /etc/kubernetes/manifests/etcd.yaml /root/</span>
+<span class="prompt">crictl ps | grep etcd || docker ps | grep etcd</span>
+<span class="comment">#    等到輸出裡看不到 etcd 容器為止（kubelet 約幾秒內收掉）</span>
+
+<span class="comment"># step 4 — 備份舊資料目錄、把還原出來的換上去</span>
+<span class="prompt">mv /var/lib/etcd /var/lib/etcd.bak</span>
+<span class="prompt">mv /var/lib/etcd-from-backup /var/lib/etcd</span>
+
+<span class="comment"># step 5 — 放回 manifest，讓 kubelet 重新拉起 etcd（此時它讀的是新資料目錄）</span>
+<span class="prompt">mv /root/etcd.yaml /etc/kubernetes/manifests/</span>
+<span class="prompt">crictl ps | grep etcd</span>
+<span class="prompt">sleep 10</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pods -A</span>
+<span class="comment">#    節點 Ready、控制平面元件回來，表示還原成功</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">還原後一定會掉狀態——這不是 bug</div>
+  <p>還原是回到 snapshot 那一刻：snapshot 之後才建立的物件全部消失（step 1 存檔之後的操作都會不見）。這正是備份的意義：<strong>時間點 = 還原點</strong>。另外 restore 會換掉 etcd 的 member ID，所以「把還原後的節點重新加入叢集」在 HA 環境要小心——考試只考單一 control-plane 或照題目指令走即可。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 三指令：<code>snapshot save</code>（三憑證+endpoints 模板）／<code>snapshot status</code>（驗）／<code>snapshot restore --data-dir=...</code>（還原成新目錄）。② 必背路徑：<code>/etc/kubernetes/manifests/etcd.yaml</code>、<code>/var/lib/etcd</code>、憑證在 <code>/etc/kubernetes/pki/etcd/</code>。③ restore 是「<strong>新資料目錄接回</strong>」不是原地復活——先停 static pod（搬 manifest）、換目錄、再放回 manifest。④ 還原點＝snapshot 時間點，之後的狀態會消失。⑤ 題目若給 member 多的叢集，restore 通常只對單一 member 做、再把其他 member 清掉重建。⑥ 指令前 <code>ETCDCTL_API=3</code> 照抄。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你在本機 kind 叢集對「活著的 etcd」執行了 snapshot save，並用 snapshot status 驗證。</li>
+  <li>你把備份檔拷出節點，並預演 restore（還原到暫存目錄）證明可還原。</li>
+  <li>你理解完整還原手術的每一步，並知道在 Killercoda VM 上照表操課。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">etcd snapshot restore 做完之後，得到的是？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">原地修好的舊目錄</button>
+    <button class="quiz-opt">新的資料目錄</button>
+    <button class="quiz-opt">一個備份檔</button>
+    <button class="quiz-opt">一顆新節點</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">備份完之後應該立刻做哪件事？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">snapshot status 驗證</button>
+    <button class="quiz-opt">刪掉備份檔</button>
+    <button class="quiz-opt">重啟 etcd</button>
+    <button class="quiz-opt">重開叢集</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">要暫停 etcd static pod，考試標準做法是？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kubectl delete pod</button>
+    <button class="quiz-opt">systemctl stop etcd</button>
+    <button class="quiz-opt">搬走 manifest</button>
+    <button class="quiz-opt">docker kill</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>備份還原學會了，代表你開始「管理」叢集。下一課把整個控制平面從零建一次：<a href="../reference/glossary.html">kubeadm</a> init／join（Killercoda 拋棄式 VM，不動本機 Calico 叢集）——把 0001 的控制平面元件圖從「看過」變成「親手裝過」。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/">Operating etcd clusters for Kubernetes（官方文件）</a>與<a href="https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#backing-up-an-etcd-cluster">Backing up an etcd cluster</a> —— 本課的權威版。把「Backing up」與「Restoring an etcd cluster」兩節逐字讀過，約 15 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

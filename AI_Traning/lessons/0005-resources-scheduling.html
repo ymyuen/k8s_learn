@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0005 — 資源與排程：requests/limits、Taints 與 Affinity</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 1 · 對應考綱：<a href="../reference/cka-domain-map.html">Workloads &amp; Scheduling（15%）</a> · 需時約 35 分鐘</p>
+
+<h1>資源與排程：requests/limits、Taints 與 Affinity</h1>
+
+<p>0004 收尾時說：四種控制器補齊後，Phase 1 的最後一塊拼圖是「資源與排程」。本課就是那塊拼圖——三個主題一次收齊：① Pod 的資源需求（<code>requests</code>／<code>limits</code>），決定 <a href="../reference/glossary.html">kube-scheduler</a> 把 Pod 塞到哪台節點；② <a href="../reference/glossary.html">Taint（污點）</a>與 <a href="../reference/glossary.html">Toleration（容忍）</a>，回收 0001 就埋下的「control-plane 污點」伏筆；③ 節點的親和性選擇。三者是 CKA「Pod 排不上」類題目的核心。</p>
+
+<div class="warn box">
+  <div class="box-title">本課起：環境切到 WSL2 終端機（一次性）</div>
+  <p>從本課開始，所有終端機實作一律在 <strong>WSL2 的 bash</strong> 進行——CKA 考試就是 Linux 終端機，愈早養成肌肉記憶愈好。Windows PowerShell 那套（含 <code>Out-File</code>）從此退役。第一件事：在 WSL2 內檢查並補齊 kubectl 與 kind，再把叢集重建為雙節點（0004 的叢集是在 Windows 端建的，直接汰換）。重建約需 2 分鐘。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">WSL2 起手式：檢查三件套、缺誰裝誰</div>
+  <pre><span class="comment"># 1. 開一個 WSL2 終端（Ubuntu），依序檢查——三個都要「找得到」且印得出版本</span>
+<span class="prompt">docker version</span>
+<span class="prompt">kind version</span>
+<span class="prompt">kubectl version --client</span>
+<span class="comment">#    docker 連不上時：Docker Desktop → Settings → Resources → WSL Integration
+#    → 勾選你的發行版（本課假設你已勾過）</span>
+
+<span class="comment"># 2. 缺 kind 才裝（二進位放 /usr/local/bin；想用更新版以 kind release 為準）</span>
+<span class="prompt">curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64</span>
+<span class="prompt">chmod +x ./kind</span>
+<span class="prompt">sudo mv ./kind /usr/local/bin/kind</span>
+
+<span class="comment"># 3. 缺 kubectl 才裝（官方「Install kubectl on Linux」頁面同款寫法）</span>
+<span class="prompt">curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"</span>
+<span class="prompt">sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">在 WSL2 內重建雙節點叢集</div>
+  <pre><span class="comment"># 4. 建工作目錄，之後的 YAML 檔都放這裡（bash 沒有 Windows 的 UTF-16 陷阱）</span>
+<span class="prompt">mkdir -p ~/practice</span>
+<span class="prompt">cd ~/practice</span>
+
+<span class="comment"># 5. 刪掉 Windows 時期建的舊叢集（kind 透過 Docker 管叢集，兩邊共用同一引擎）</span>
+<span class="prompt">kind delete cluster</span>
+
+<span class="comment"># 6. 用 nano 建立雙節點設定檔（貼上下面內容；存檔 Ctrl+O → Enter；離開 Ctrl+X）</span>
+<span class="prompt">nano kind-config.yaml</span>
+
+<span class="comment"># 內容——與 0001 選配、0004 用過的同一份雙節點設定：</span>
+<span class="prompt">kind: Cluster</span>
+<span class="prompt">apiVersion: kind.x-k8s.io/v1alpha4</span>
+<span class="prompt">nodes:</span>
+<span class="prompt">- role: control-plane</span>
+<span class="prompt">- role: worker</span>
+
+<span class="comment"># 7. 重建（約 2 分鐘），kind 會自動把 kubeconfig 寫進 WSL2 的家目錄</span>
+<span class="prompt">kind create cluster --config kind-config.yaml</span>
+
+<span class="comment"># 8. 驗收：兩台 Ready；context 叫 kind-kind</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl config current-context</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>從現在起 <code>kubectl</code> 讀的是 <code>~/.kube/config</code>（WSL2 內那份）。Windows PowerShell 裡的舊 kubeconfig 正式淘汰——本課之後所有指令都以這個 WSL2 終端為準。若 <code>kubectl get nodes</code> 只看到一台，回去檢查第 6 步的檔案是不是存成預設檔名與內容。</p>
+</div>
+
+<h2>requests 與 limits：Pod 的資源「底價」與「上限」</h2>
+<p>Pod 可以宣告兩種資源（CPU、memory）的兩組數字。這四個欄位是排程與運行的關鍵：</p>
+
+<table>
+  <thead>
+    <tr><th></th><th>requests（請求）</th><th>limits（上限）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>作用時機</strong></td>
+      <td>排程時（scheduler 找節點）</td>
+      <td>運行時（kubelet 強制執行）</td>
+    </tr>
+    <tr>
+      <td><strong>意義</strong></td>
+      <td>「我至少要這麼多」——保證額度</td>
+      <td>「我最多用這麼多」——使用天花板</td>
+    </tr>
+    <tr>
+      <td><strong>CPU 超過會怎樣</strong></td>
+      <td>—</td>
+      <td>被節流（throttle），變慢但不會死</td>
+    </tr>
+    <tr>
+      <td><strong>Memory 超過會怎樣</strong></td>
+      <td>—</td>
+      <td><strong>OOMKilled</strong>，容器被殺掉重啟</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>CPU 單位：<code>1</code>＝一整顆核心，小數或毫核 <code>100m</code>＝0.1 核心。Memory 單位：<code>128Mi</code>（mebibytes，2 的次方）或 <code>1Gi</code>；考場最常看到 Mi/Gi。Scheduler 決策時<b>只算 requests</b>：它把每台節點上所有 Pod 的 requests 加總，<code>describe node</code> 的「Allocated resources」就是這本帳。</p>
+
+<h2>QoS：沒寫 requests 的 Pod 排最後</h2>
+<p>三個欄位沒寫齊，Pod 會被歸進三種 <a href="../reference/glossary.html">QoS（服務品質）</a>等級之一，OOM 時殺誰的順序跟著等級走：</p>
+<ul>
+  <li><strong>Guaranteed</strong>：每個容器都寫了 requests，且 requests ＝ limits（CPU 與 memory 皆然）。優先級最高，最不容易被 OOM 殺掉。</li>
+  <li><strong>Burstable</strong>：至少一個容器有 requests，但不等於 limits（最常見）。</li>
+  <li><strong>BestEffort</strong>：任何容器都沒寫 requests／limits。資源不夠時<b>第一個被殺</b>。</li>
+</ul>
+<p>秒判法：<strong>「有沒有寫」→「相等不相等」</strong>。全部沒寫＝BestEffort；有寫且全等＝Guaranteed；其他＝Burstable。</p>
+
+<h2>實作 A：帶資源的 Deployment 與 QoS 觀察</h2>
+<p>叢集雙節點已就緒。用 0004 練過的 dry-run 工作法，產出一個帶 <code>resources</code> 的 Deployment：</p>
+
+<div class="terminal box">
+  <div class="box-title">建帶資源需求的 Deployment（Burstable 版）</div>
+  <pre><span class="comment"># 9. dry-run 產出 Deployment YAML 存檔（bash 直接 &gt; 就是純文字）</span>
+<span class="prompt">kubectl create deployment resource-demo --image=nginx:1.25 --replicas=2 --dry-run=client -o yaml &gt; deploy.yaml</span>
+
+<span class="comment"># 10. nano 打開，在 containers[0] 的 image 下面補 resources 段（縮排 8 格起）</span>
+<span class="prompt">nano deploy.yaml</span>
+<span class="comment">#    spec.template.spec.containers[0] 內加：
+#      resources:
+#        requests:
+#          cpu: 100m
+#          memory: 128Mi
+#        limits:
+#          cpu: 300m
+#          memory: 256Mi
+#    （requests ≠ limits，這是刻意的——等一下會看到 Burstable）</span>
+
+<span class="comment"># 11. 套用並等就緒</span>
+<span class="prompt">kubectl apply -f deploy.yaml</span>
+<span class="prompt">kubectl rollout status deployment/resource-demo</span>
+
+<span class="comment"># 12. 用 jsonpath 讀出 Pod 的 QoS 等級</span>
+<span class="prompt">kubectl get pods -l app=resource-demo -o jsonpath='{.items[0].status.qosClass}'</span>
+<span class="comment">#    輸出 Burstable——因為 requests 與 limits 不相等</span>
+
+<span class="comment"># 13. 看節點的資源帳本（Allocated resources 區塊）</span>
+<span class="prompt">kubectl describe node kind-worker</span>
+<span class="comment">#    你會看到兩顆 Pod 各佔 cpu 100m／memory 128Mi 的 requests</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 13 步的 <code>describe node</code> 是考場必查頁：<code>Allocated resources</code> 區塊是這台節點的「資源帳本」——把所有 Pod 的 requests（與 limits）分開加總，對照上方的 <code>Allocatable</code>，一眼算出「這台還塞得下多大的 Pod」。當所有節點的剩餘額度都容不下一顆新 Pod 時，它會卡在 <code>Pending</code>，而「排不下」的證據 <strong>FailedScheduling 事件是記在那顆 Pod 身上</strong>（<code>describe pod</code> 的 Events 會寫 <code>Insufficient cpu</code>／<code>Insufficient memory</code>），不是記在節點的 Events——查法見下面方框。第 12 步的 QoS 顯示 <code>Burstable</code>，呼應概念段的口訣：requests ≠ limits。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">「排不下」的長相：節點看帳、Pod 看原因</div>
+  <pre><span class="comment"># describe node 的 Allocated resources（節點的帳本）：</span>
+<span class="comment">#   Resource   Requests        Limits</span>
+<span class="comment">#   cpu        850m (42%)      1500m (75%)</span>
+<span class="comment">#   memory     300Mi (15%)     700Mi (36%)</span>
+<span class="comment">#   → Requests 欄逼近 100% 時，新的 Pod 就塞不進「這台」</span>
+<span class="comment">#
+# 排不上的那顆 Pod（kubectl describe pod 或 get events --sort-by=.lastTimestamp）：</span>
+<span class="comment">#   Warning  FailedScheduling  …</span>
+<span class="comment">#   0/2 nodes are available: 2 Insufficient cpu. preemption: 0 …</span>
+<span class="comment">#   → 「Insufficient cpu / memory」＝把 Pod 的 requests 加進去後超過節點剩餘額度
+#     （訊息也會混進 taint／nodeSelector 的理由，如 0005 實作 B 的 untolerated taint）
+#
+# 兩邊對照的口訣：
+#   describe node → 看帳（每台還剩多少額度）
+#   describe pod（Pending 那顆）→ 看原因（FailedScheduling 明寫哪台缺什麼）
+#   節點自己的 Events 是「節點級」事件（記憶體壓力逐出、條件變化），
+#   資源不足的排程失敗不會出現在這裡——別查錯地方。
+#</span>
+<span class="comment"># 選做：親手做出一次 FailedScheduling（64Gi 的 Pod，任何節點都塞不下）
+#   注意：現代 kubectl 的 run 已不收資源旗標（requests/limits 屬 Pod spec 欄位），用第 9 步同款 dry-run 工作法</span>
+<span class="prompt">kubectl run too-big --image=nginx:1.25 --restart=Never --dry-run=client -o yaml &gt; too-big.yaml</span>
+<span class="prompt">nano too-big.yaml</span>
+<span class="comment">#    把 containers 下的 resources: {} 佔位展開成：
+#      resources:
+#        requests:
+#          memory: 64Gi</span>
+<span class="prompt">kubectl apply -f too-big.yaml</span>
+<span class="prompt">kubectl get pod too-big</span>
+<span class="comment">#   STATUS = Pending</span>
+<span class="prompt">kubectl describe pod too-big | tail -n 8</span>
+<span class="comment">#   Events 出現 FailedScheduling … Insufficient memory</span>
+<span class="prompt">kubectl delete pod too-big</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">改成 requests = limits，升級成 Guaranteed</div>
+  <pre><span class="comment"># 14. 把 limits 改成與 requests 相同（cpu 300m→100m、memory 256Mi→128Mi）</span>
+<span class="prompt">nano deploy.yaml</span>
+<span class="comment">#     requests 與 limits 都要寫、而且相等，才是 Guaranteed（見下面 warn）</span>
+
+<span class="prompt">kubectl apply -f deploy.yaml</span>
+<span class="prompt">kubectl rollout status deployment/resource-demo</span>
+
+<span class="comment"># 15. 再看 QoS：requests = limits → Guaranteed</span>
+<span class="prompt">kubectl get pods -l app=resource-demo -o jsonpath='{.items[0].status.qosClass}'</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">CKA 陷阱：只寫 requests 不寫 limits ≠ Guaranteed</div>
+  <p>Guaranteed 的條件是「requests <strong>且</strong> limits 都有寫、而且相等」。只寫 requests、或 requests 與 limits 不等，都只算 Burstable。想快速製造 Guaranteed，把兩段寫成完全相同的值即可。這是選擇題與 YAML 判讀題的熱區。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾實作 A，順便看 BestEffort 長相</div>
+  <pre><span class="comment"># 16. 刪掉 resource-demo 與它的 YAML</span>
+<span class="prompt">kubectl delete deployment resource-demo</span>
+<span class="prompt">rm deploy.yaml</span>
+
+<span class="comment"># 17. 用 kubectl run 建一顆「什麼資源都沒寫」的 Pod——它是 BestEffort</span>
+<span class="prompt">kubectl run best-effort --image=nginx:1.25</span>
+<span class="prompt">kubectl get pod best-effort -o jsonpath='{.status.qosClass}'</span>
+<span class="comment">#    輸出 BestEffort</span>
+<span class="prompt">kubectl delete pod best-effort</span></pre>
+</div>
+
+<h2>Taints 與 Tolerations：誰不准來、誰能忍</h2>
+<p>0001 預告過：正式叢集的 control-plane 節點帶 <code>node-role.kubernetes.io/control-plane:NoSchedule</code> 污點，一般 Pod 排不上去；kind 建單節點叢集時把這污點拔掉了，所以你在 kind-control-plane 上跑過 Pod。機制拆成兩半：</p>
+<ul>
+  <li><strong>Taint</strong> 打在<strong>節點</strong>上，像貼「本店不招待」：效果有 <code>NoSchedule</code>（不排新的）、<code>PreferNoSchedule</code>（盡量不排）、<code>NoExecute</code>（不排新的，<strong>還把已在上面的 Pod 逐出</strong>）。</li>
+  <li><strong>Toleration</strong> 寫在<strong>Pod</strong>上，像「我有 VIP 卡」：對應污點的 Pod 才允許被排上去。口訣：<strong>容忍只是「允許」，不是「偏好」</strong>——加了 toleration 不代表一定會被排過去。</li>
+</ul>
+
+<p>Taint 語法：<code>kubectl taint node &lt;節點名&gt; &lt;key&gt;=&lt;value&gt;:&lt;Effect&gt;</code>；移除時在尾巴加 <code>-</code>。Toleration 在 Pod 的 <code>spec.tolerations</code>：</p>
+
+<div class="terminal box">
+  <div class="box-title">toleration 的標準 YAML 寫法（對照關係用顏色記）</div>
+  <pre><span class="comment"># taint（節點上）：disk=slow:NoSchedule</span>
+<span class="prompt">tolerations:</span>
+<span class="prompt">- key: disk</span>
+<span class="prompt">  operator: Equal</span>
+<span class="prompt">  value: slow</span>
+<span class="prompt">  effect: NoSchedule</span>
+<span class="comment"># 一一對應：key 相同、operator=Equal + value 相同、effect 相同，
+# 這顆 Pod 才「忍得住」那顆節點上的污點。</span></pre>
+</div>
+
+<h2>實作 B：親眼見證 control-plane 污點，再把節點「關上／打開」</h2>
+<p>本課開場建的<strong>雙節點</strong> kind 叢集，control-plane 保留著正式叢集的污點（kind 只在單節點叢集時自動幫你移除，0001 講的正是單節點案例）。這是本課最好的教材：先看污點怎麼讓 Pod「全擠去 worker」，再貼第二個污點看 Pod 卡 Pending，最後用 toleration 放行。</p>
+
+<div class="terminal box">
+  <div class="box-title">先回收 0001 的伏筆：control-plane 污點</div>
+  <pre><span class="comment"># 18. 看兩台節點的 Taints：control-plane 掛著 NoSchedule 污點、worker 沒有</span>
+<span class="prompt">kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints[*].key</span>
+<span class="comment">#    kind-control-plane → node-role.kubernetes.io/control-plane
+#    kind-worker        → &lt;none&gt;</span>
+
+<span class="comment"># 19. 佈 3 顆副本：沒有 toleration 的 Pod 進不了 control-plane——三顆全擠在 kind-worker</span>
+<span class="prompt">kubectl create deployment taint-demo --image=nginx:1.25 --replicas=3</span>
+<span class="prompt">kubectl get pods -o wide</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">污點實戰：NoSchedule 只擋「新的」</div>
+  <pre><span class="comment"># 20. 把 worker 也貼上污點——從現在起兩台都不能排新 Pod</span>
+<span class="prompt">kubectl taint node kind-worker disk=slow:NoSchedule</span>
+
+<span class="comment"># 21. 刪一顆 Pod：替身兩台都進不去，直接卡 Pending（這正是「排不上」的現場）</span>
+<span class="prompt">kubectl delete pod taint-demo-<span style="font-style:italic">(隨機尾碼)</span></span>
+<span class="prompt">kubectl get pods -o wide</span>
+<span class="prompt">kubectl describe pod -l app=taint-demo | tail -n 15</span>
+<span class="comment">#    Events 會寫：node(s) had untolerated taint {disk=slow:NoSchedule}
+#    原本沒被刪的 Pod 還好好在跑——NoSchedule 不逐出既有 Pod</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 21 步是三件事同時亮相：① <strong>NoSchedule 只擋新 Pod</strong>（既有的不動）；② 排不上的症狀是 <strong>Pending</strong>，根因寫在 describe 的 Events（<code>untolerated taint</code>）；③ 一台節點有污點還不夠絕——等兩台都「關上」，Pod 就真的無處可去。CKA 看到 Pending，第一件事就是查節點 Taints。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">加上 toleration，把 worker 重新「打開」</div>
+  <pre><span class="comment"># 22. 產出 deployment YAML，在 spec.template.spec 加 tolerations（0004 的 dry-run 工作法）</span>
+<span class="prompt">kubectl create deployment taint-demo --image=nginx:1.25 --replicas=3 --dry-run=client -o yaml &gt; taint-demo.yaml</span>
+<span class="prompt">nano taint-demo.yaml</span>
+<span class="comment">#      tolerations:
+#      - key: disk
+#        operator: Equal
+#        value: slow
+#        effect: NoSchedule</span>
+
+<span class="comment"># 23. 套用：有卡的 Pod 能進 worker，Pending 的替身被接手、全部 Running</span>
+<span class="prompt">kubectl apply -f taint-demo.yaml</span>
+<span class="prompt">kubectl get pods -o wide</span>
+<span class="comment">#    注意：Pod 仍不會去 control-plane——worker 的污點被容忍，control-plane 的沒有</span>
+
+<span class="comment"># 24. 收尾：移除 worker 的污點、刪 Deployment</span>
+<span class="prompt">kubectl taint node kind-worker disk=slow:NoSchedule-</span>
+<span class="prompt">kubectl delete deployment taint-demo</span>
+<span class="prompt">rm taint-demo.yaml</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">想把 Pod 也放到 control-plane？（實驗用）</div>
+  <p>兩個方法二選一：① 移除 control-plane 的污點 <code>kubectl taint node kind-control-plane node-role.kubernetes.io/control-plane:NoSchedule-</code>；② 在 Pod 加一條對應的 toleration（key <code>node-role.kubernetes.io/control-plane</code>、effect <code>NoSchedule</code>）。正式叢集不建議讓一般工作負載上 control-plane，但考試可能叫你把某顆 Pod 排上去——知道這條指令就夠了。</p>
+</div>
+
+<div class="warn box">
+  <div class="box-title">NoExecute 的差別（考試愛考一句話）</div>
+  <p>把效果換成 <code>NoExecute</code>，不只是「不排新的」——kubelet 會把<strong>已經在該節點上、且沒有對應 toleration</strong> 的 Pod 直接逐出（terminate）。Pod 可加 <code>tolerationSeconds</code> 指定「寬限 N 秒再被逐出」。NoExecute 常被用來做「要下線維修的節點先把 Pod 趕走」。</p>
+</div>
+
+<h2>nodeSelector 與 Node Affinity：Pod 指定要去哪台</h2>
+<p>Taint/Toleration 是「節點拒絕你」；反過來，Pod 也能「指定想去哪」：</p>
+<ul>
+  <li><a href="../reference/glossary.html">nodeSelector</a>：最簡單——把 Pod 釘在「帶某 label」的節點上。語法只能比「等於」，而且要 <code>nodeSelector</code> 指定鍵的 label 存在於節點才排得上去。</li>
+  <li><a href="../reference/glossary.html">Node Affinity（節點親和性）</a>：更強的表達力——<code>requiredDuringSchedulingIgnoredDuringExecution</code>（硬性，等同 nodeSelector 但支援 <code>In</code>/<code>NotIn</code> 等運算子）與 <code>preferredDuringSchedulingIgnoredDuringExecution</code>（軟性，「盡量」但不保證）。</li>
+</ul>
+<p>一句話對比：<strong>nodeSelector 是「只能等於的 affinity」；affinity 是「會選 label 的 nodeSelector」。</strong></p>
+
+<h2>實作 C：nodeSelector 釘單節點，再改寫成 affinity</h2>
+
+<div class="terminal box">
+  <div class="box-title">nodeSelector 把 Pod 釘在 worker</div>
+  <pre><span class="comment"># 25. 先幫 kind-worker 貼一個 label（用 0003 的 kubectl label）</span>
+<span class="prompt">kubectl label node kind-worker disk=fast</span>
+
+<span class="comment"># 26. 產出 YAML 並加 nodeSelector（在 template.spec 下、containers 外）</span>
+<span class="prompt">kubectl create deployment pinned --image=nginx:1.25 --replicas=2 --dry-run=client -o yaml &gt; pinned.yaml</span>
+<span class="prompt">nano pinned.yaml</span>
+<span class="comment">#      spec.template.spec:
+#        nodeSelector:
+#          disk: fast</span>
+<span class="prompt">kubectl apply -f pinned.yaml</span>
+
+<span class="comment"># 27. 兩顆都該在 kind-worker 上——這就是「釘選」</span>
+<span class="prompt">kubectl get pods -o wide -l app=pinned</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">把 nodeSelector 改寫成等價的 nodeAffinity</div>
+  <pre><span class="comment"># 28. 用 nano 把 nodeSelector 段換成 nodeAffinity（硬性 required）</span>
+<span class="prompt">nano pinned.yaml</span>
+<span class="comment">#      spec.template.spec:
+#        affinity:
+#          nodeAffinity:
+#            requiredDuringSchedulingIgnoredDuringExecution:
+#              nodeSelectorTerms:
+#              - matchExpressions:
+#                - key: disk
+#                  operator: In
+#                  values: [fast]</span>
+<span class="prompt">kubectl apply -f pinned.yaml</span>
+<span class="prompt">kubectl get pods -o wide -l app=pinned</span>
+<span class="comment">#    效果與 nodeSelector 相同，但 operator 可以換成 NotIn 等條件</span>
+
+<span class="comment"># 29. 收尾：刪 Deployment、移除節點 label</span>
+<span class="prompt">kubectl delete deployment pinned</span>
+<span class="prompt">kubectl label node kind-worker disk-</span>
+<span class="prompt">rm pinned.yaml</span>
+
+<span class="comment"># 30. 課末確認叢集狀態：乾淨的雙節點，留給下一課</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pods -A | head</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 26 步的兩顆 Pod 全部在 <code>kind-worker</code>，因為 nodeSelector 是硬條件：節點上沒有 <code>disk=fast</code> 這個 label，Pod 就會卡在 <code>Pending</code>（試試把 label 移除後重建就能看到）。第 28 步把同一條件翻譯成 nodeAffinity，行為不變、表達力升級——考試兩者都要會寫。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① taint 語法：<code>kubectl taint node &lt;node&gt; key=value:Effect</code>，移除加 <code>-</code>；三種效果 NoSchedule／PreferNoSchedule／NoExecute，後者會逐出既有 Pod。② toleration 與 taint「一一對應」：key、operator/value、effect 三項都對上才有效；容忍 ≠ 偏好。③ 資源帳：<code>kubectl describe node</code> 看 <code>Allocated resources</code>；Pod 排不上先查 node 的 <code>Events</code> 與污點。④ QoS 秒判：全沒寫＝BestEffort；有寫且全等＝Guaranteed；其他＝Burstable。⑤ 想排特定節點：先確認 label（<code>kubectl get nodes --show-labels</code>），nodeSelector 只會等於、affinity 才支援 In/NotIn。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你把練習環境正式切到 WSL2 bash，並在 WSL2 內重建出雙節點 kind 叢集。</li>
+  <li>你會寫 <code>requests</code>／<code>limits</code>，能判讀節點的 Allocated resources，並能說出三種 QoS 等級的判法。</li>
+  <li>你親手貼上並移除節點污點，見證 NoSchedule「只擋新 Pod」，也讓 Pod 用 toleration 重新獲得排程資格。</li>
+  <li>你能用 nodeSelector 把 Pod 釘到指定節點，並把同一條件改寫成 nodeAffinity。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">scheduler 在選節點時，主要看 Pod 的哪個欄位？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">limits</button>
+    <button class="quiz-opt">實際用量</button>
+    <button class="quiz-opt">requests</button>
+    <button class="quiz-opt">標籤</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">requests 與 limits 都寫了但不相等，QoS 是哪一級？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">Guaranteed</button>
+    <button class="quiz-opt">Burstable</button>
+    <button class="quiz-opt">BestEffort</button>
+    <button class="quiz-opt">未知</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="3">
+  <p class="quiz-q">節點貼了 taint（NoExecute），會對已在上面的 Pod 怎樣？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">升級它們</button>
+    <button class="quiz-opt">備份它們</button>
+    <button class="quiz-opt">保留不動</button>
+    <button class="quiz-opt">逐出它們</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>資源與排程讓 Pod「放得下、放對地方」。下一課開始 Phase 2：Pod 內容物的管理——ConfigMap 與 Secret，把「設定」從映像檔裡抽出來，讓同一個映像在不同環境（dev/test/prod）用不同設定跑。本課結束叢集保持雙節點、無殘留練習物件，下一課直接沿用。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource Management for Pods and Containers（官方文件）</a>與<a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/">Assigning Pods to Nodes（官方文件）</a> —— 本課的權威版，重點讀「Requests and limits」與「Taints and Tolerations」兩節，約 20 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

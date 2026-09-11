@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0001 — 叢集架構與你的第一個 Pod</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 0 · 對應考綱：<a href="../reference/cka-domain-map.html">Cluster Architecture, Installation &amp; Configuration（25%）</a> · 需時約 10 分鐘</p>
+
+<h1>叢集架構與你的第一個 Pod</h1>
+
+<p>你已經有容器經驗：<code>docker run</code> 拉一個 image、跑一個 process，搞定。那 Kubernetes 到底多了什麼？答案就一句話——<strong>它把「跑容器」這件事從「一台機器上」搬到「一群機器上」</strong>，並讓那群機器看起來像一台。</p>
+
+<h2>為什麼需要「一群機器」？</h2>
+<p>單機跑容器有三個天花板，而 Kubernetes 生來就是來拆這三面牆的：</p>
+<ul>
+  <li><strong>故障</strong>：機器掛了，應用就掛了。Kubernetes 在另一台機器重新把 Pod 拉起來。</li>
+  <li><strong>伸縮</strong>：流量爆掉，加幾台機器裝不下。Kubernetes 告訴新 Pod 該放哪。</li>
+  <li><strong>管理</strong>：幾十台機器各自 <code>ssh</code> 進去開容器？Kubernetes 給你單一 API 統一管。</li>
+</ul>
+
+<h2>兩個半場：Control Plane 與 Nodes</h2>
+<p>一個叢集（cluster）分成兩個角色。想理解 Kubernetes，先記住這張分工圖。</p>
+
+<table>
+  <thead>
+    <tr><th>角色</th><th>在哪裡跑</th><th>元件</th><th>一句話職責</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td rowspan="3"><strong>Control Plane</strong><br>（控制平面 = 大腦）</td>
+      <td rowspan="3">控制平面節點</td>
+      <td><code>kube-apiserver</code></td>
+      <td>對外唯一 API 入口，所有管理指令都進這裡</td>
+    </tr>
+    <tr>
+      <td><code>etcd</code></td>
+      <td>鍵值資料庫，存放叢集<strong>所有狀態</strong>（CKA 必考備份）</td>
+    </tr>
+    <tr>
+      <td><code>kube-scheduler</code>、<code>kube-controller-manager</code></td>
+      <td>排程器決定 Pod 放哪台節點；控制器負責把現況推向期望狀態</td>
+    </tr>
+    <tr>
+      <td><strong>Worker Node</strong><br>（工作節點 = 手腳）</td>
+      <td>工作節點</td>
+      <td><code>kubelet</code>、<code>kube-proxy</code>、Container Runtime</td>
+      <td>kubelet 確保節點上的容器照著規格跑；kube-proxy 實作 Service 網路規則</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>關鍵心法：<strong>你（透過 kubectl）永遠只跟 kube-apiserver 說話</strong>。apiserver 驗證你的身分，把想要的狀態寫進 etcd，其他元件看著 etcd 各自做事。這叫「宣告式」（declarative）：你宣告「我要 3 個 nginx」，剩下的排程、啟動、自癒都不是你管的事。</p>
+
+<div class="terminal box">
+  <div class="box-title">一筆請求的生命旅程</div>
+  <pre>你打 <span class="prompt">kubectl run nginx --image=nginx</span>
+  → kube-apiserver（驗證、寫入 etcd）
+  → kube-scheduler（選一台節點）
+  → 那台節點的 kubelet（叫 container runtime 啟動容器）
+  → 回報狀態給 apiserver → 存回 etcd</pre>
+</div>
+
+<h2>終端機實作：建叢集、跑第一個 Pod</h2>
+<p>理論到這裡就夠了——現在動手。我們用 <a href="https://kind.sigs.k8s.io/">kind</a>（Kubernetes in Docker）在 WSL2 + Docker Desktop 上建一個真叢集，不用碰雲端。</p>
+
+<div class="warn box">
+  <div class="box-title">環境準備（只做一次）</div>
+  <p>先確認 WSL2 內有 Docker 與 kind：<code>docker version</code>、<code>kind --version</code>。沒有就先裝 kind（官方文件：<code>curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64</code>），再裝 <a href="https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/">kubectl</a>。若安裝遇到問題，直接問講師。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">指令清單（照著打）</div>
+  <pre><span class="comment"># 1. 建立叢集（約 2 分鐘）。注意：不帶設定檔時 kind 只建「單節點」，
+#    這台節點同時是 control-plane 兼 worker——所以等等只會看到一台。</span>
+<span class="prompt">kind create cluster</span>
+
+<span class="comment"># 2. 看叢集裡的節點——只有 kind-control-plane，ROLE 是 control-plane</span>
+<span class="prompt">kubectl get nodes</span>
+
+<span class="comment"># 3. 跑出你的第一個 Pod</span>
+<span class="prompt">kubectl run nginx --image=nginx</span>
+
+<span class="comment"># 4. 看 Pod 狀態（耐心等它到 Running）</span>
+<span class="prompt">kubectl get pods</span>
+
+<span class="comment"># 5. 看細節——事件、IP、容器狀態都在這裡</span>
+<span class="prompt">kubectl describe pod nginx</span>
+
+  <span class="comment"># 6. 結束練習後清理</span>
+<span class="prompt">kubectl delete pod nginx</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">選配：真正的一主一從</div>
+  <p>想練習「scheduler 在多台節點之間選一台」，就用設定檔建立雙節點叢集：</p>
+  <pre><span class="comment"># kind-config.yaml</span>
+<span class="prompt">kind: Cluster</span>
+<span class="prompt">apiVersion: kind.x-k8s.io/v1alpha4</span>
+<span class="prompt">nodes:</span>
+<span class="prompt">- role: control-plane</span>
+<span class="prompt">- role: worker</span>
+
+<span class="comment"># 然後重新建立</span>
+<span class="prompt">kind delete cluster</span>
+<span class="prompt">kind create cluster --config kind-config.yaml</span>
+<span class="prompt">kubectl get nodes   # 這次有 kind-control-plane 與 kind-worker 兩台</span></pre>
+  <p>也可在 <code>nodes</code> 各項加上 <code>image: kindest/node:vX.Y.Z</code> 對齊特定 K8s 版本（例如考試的 v1.35；以 kind release notes 支援的 tag 為準）。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">課前預告：為什麼上面沒有 worker 也能跑 Pod？</div>
+  <p>正式叢集的 control-plane 節點帶有 taint（<code>node-role.kubernetes.io/control-plane:NoSchedule</code>），一般 Pod 若沒有對應的 toleration 就不會被排程上去。kind 為了讓單節點可用，建立時把這個 taint 拿掉了，所以 nginx 能直接跑在 <code>kind-control-plane</code> 上。Taint 與 Toleration 是考綱 Workloads &amp; Scheduling 的內容，後續課程會正式教。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>CKA 考試允許查官方文件，但禁止用<strong>生疏指令</strong>浪費時間。練到「<code>kubectl run</code> / <code>get</code> / <code>describe</code>」成為反射動作。常用縮寫也記住：<code>po</code>（pods）、<code>ns</code>（namespaces）。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你能說出控制平面與工作節點的分工，以及誰保存叢集狀態。</li>
+  <li>你用 kind 建了一個真叢集，並用 kubectl 跑出、檢視、刪除了第一個 Pod。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">誰是叢集的對外 API 唯一入口？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kube-proxy</button>
+    <button class="quiz-opt">kube-scheduler</button>
+    <button class="quiz-opt">kube-apiserver</button>
+    <button class="quiz-opt">kube-controller-manager</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Pod 意外消失後，誰負責重新拉起它？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">控制器</button>
+    <button class="quiz-opt">排程器</button>
+    <button class="quiz-opt">kubectl</button>
+    <button class="quiz-opt">kube-proxy</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="3">
+  <p class="quiz-q">叢集的全部狀態存放在哪個元件？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kubelet</button>
+    <button class="quiz-opt">kube-apiserver</button>
+    <button class="quiz-opt">Container Runtime</button>
+    <button class="quiz-opt">etcd</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>裸 Pod 不能自我修復（你刪掉它就真的沒了）。下一課我們會用 Deployment 包住 Pod——那才是「控制器把現況推向期望狀態」真正活起來的地方。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/concepts/overview/components/">Kubernetes Components（官方文件）</a> —— 本課表格的權威版，建議花 10 分鐘讀一遍。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

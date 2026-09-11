@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0003 — Labels &amp; Selectors 深入</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 1 · 對應考綱：<a href="../reference/cka-domain-map.html">Workloads &amp; Scheduling / Troubleshooting（貫穿）</a> · 需時約 20 分鐘</p>
+
+<h1>Labels &amp; Selectors 深入</h1>
+
+<p>上一課的結論是：「Deployment 靠 selector 認領自己的 ReplicaSet，ReplicaSet 靠 selector 認領自己的 Pod」。本課把這套「認人機制」講透——<strong>控制器從來不是靠名字認親，而是靠標籤與選擇器</strong>。這個機制貫穿 Workloads &amp; Scheduling 與 Troubleshooting（30%），而「selector 不匹配」正是 CKA 最常見的除錯情境之一。（若 0002 的 <code>rollout undo</code> 還沒補做，先花一分鐘回去做完，再回來繼續。）</p>
+
+<h2>Label：物件的身份證</h2>
+<p>Label 是附著在物件上的鍵值對（<code>key=value</code>），用途只有兩個字：<strong>組織與選取</strong>。鍵名規則：可加 prefix（如 <code>app.kubernetes.io/name</code>，prefix 須是 DNS 子網域名稱）；名稱與值最多 63 字元、只能含字母數字與 <code>-</code> <code>_</code> <code>.</code>，且開頭結尾必須是字母數字。慣例上最常見的鍵：<code>app</code>（應用）、<code>tier</code>（層級，frontend/backend）、<code>version</code>（版本）。</p>
+
+<table>
+  <thead>
+    <tr><th></th><th>Label（標籤）</th><th>Annotation（註解）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>用途</strong></td>
+      <td>組織與選取物件</td>
+      <td>附加說明資訊（如 change-cause）</td>
+    </tr>
+    <tr>
+      <td><strong>可否被 selector 選取</strong></td>
+      <td><strong>可以</strong></td>
+      <td><strong>不可以</strong></td>
+    </tr>
+    <tr>
+      <td><strong>典型內容</strong></td>
+      <td>小型鍵值對（<code>app=nginx</code>）</td>
+      <td>可較長、結構化文字</td>
+    </tr>
+    <tr>
+      <td><strong>範例</strong></td>
+      <td><code>app=nginx</code>、<code>tier=frontend</code></td>
+      <td><code>kubernetes.io/change-cause="更新到 1.26"</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>記住這個關鍵差別：<strong>Label 是給 selector 選的，Annotation 是給人看的。</strong></p>
+
+<h2>Selector 兩種類型</h2>
+<p>Selector 就是「認人條件」。每個控制器都把一條或多條條件寫在 selector 裡，<strong>全部符合才算認領</strong>（多條件用 <code>,</code> 連接）。Selector 有兩種寫法：</p>
+
+<table>
+  <thead>
+    <tr><th>型別</th><th>運算子</th><th>範例</th><th>意義</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td rowspan="2"><strong>Equality-based</strong><br>（等值式）</td>
+      <td><code>=</code>、<code>==</code></td>
+      <td><code>app=nginx</code></td>
+      <td>該 label 的值等於 nginx</td>
+    </tr>
+    <tr>
+      <td><code>!=</code></td>
+      <td><code>tier!=frontend</code></td>
+      <td>值不等於 frontend（或沒有該鍵）</td>
+    </tr>
+    <tr>
+      <td rowspan="3"><strong>Set-based</strong><br>（集合式）</td>
+      <td><code>in</code></td>
+      <td><code>app in (nginx, busybox)</code></td>
+      <td>值是集合中的其中一員</td>
+    </tr>
+    <tr>
+      <td><code>notin</code></td>
+      <td><code>tier notin (frontend, backend)</code></td>
+      <td>值不在集合中</td>
+    </tr>
+    <tr>
+      <td>exists</td>
+      <td><code>tier</code>（有鍵）、<code>!tier</code>（沒鍵）</td>
+      <td>只看鍵存不存在，不看值</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="terminal box">
+  <div class="box-title">kubectl 帶 selector 的三種寫法（-l）</div>
+  <pre><span class="comment"># equality：等於</span>
+<span class="prompt">kubectl get pods -l app=nginx</span>
+
+<span class="comment"># set-based：值在集合內（留意括號是 ( )，不是 { }）</span>
+<span class="prompt">kubectl get pods -l 'app in (nginx, busybox)'</span>
+
+<span class="comment"># set-based exists：只要沒有 tier 這個鍵</span>
+<span class="prompt">kubectl get pods -l '!tier'</span></pre>
+</div>
+
+<h2>實作 A：動手玩 Label</h2>
+<p>在你的 kind 叢集開一個新終端機照著打。如果 0002 結尾忘了清理，先 <code>kubectl delete deployment nginx</code>。</p>
+
+<div class="terminal box">
+  <div class="box-title">建立 Deployment，然後動手改 label</div>
+  <pre><span class="comment"># 1. 建立 3 顆副本的 Deployment——它就是我們認人實驗的主角</span>
+<span class="prompt">kubectl create deployment nginx --image=nginx:1.25 --replicas=3</span>
+<span class="prompt">kubectl rollout status deployment/nginx</span>   <span class="comment"># 等 3 顆都就緒</span>
+
+<span class="comment"># 2. 把 label 一起印出來</span>
+<span class="prompt">kubectl get pods --show-labels</span>
+<span class="comment">#    每顆 Pod 應該有兩個 label：app=nginx（Deployment 加的）與
+#    pod-template-hash=...（ReplicaSet 加的，用來區分新舊版本）</span>
+
+<span class="comment"># 3. 依 label 過濾：只要 app=nginx 的 Pod</span>
+<span class="prompt">kubectl get pods -l app=nginx</span>
+
+<span class="comment"># 4. 挑一顆，幫它加 label tier=frontend（鍵不存在，直接加）</span>
+<span class="prompt">kubectl label pod nginx-<span style="font-style:italic">(隨機尾碼)</span> tier=frontend</span>
+
+<span class="comment"># 5. 用新 label 也找得到它</span>
+<span class="prompt">kubectl get pods -l tier=frontend</span>
+
+<span class="comment"># 6. 移除 label：鍵名尾巴加減號 -</span>
+<span class="prompt">kubectl label pod nginx-<span style="font-style:italic">(隨機尾碼)</span> tier-</span>
+
+<span class="comment"># 7. Set-based 示範：值「在集合內」才選中</span>
+<span class="prompt">kubectl get pods -l 'app in (nginx)'</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p><code>--show-labels</code> 多印一欄 LABELS；<code>-l</code> 依條件過濾，列出的 Pod 數量與內容會跟著你的條件改變。把 <code>tier=frontend</code> 加在某一顆上，<code>kubectl get pods -l tier=frontend</code> 就只會列出那一顆；刪掉 label 後再用同一條件就查不到了。</p>
+</div>
+
+<h2>實作 B：讓 Pod 變成孤兒（selector 不匹配）</h2>
+<p>CKA 常見除錯情境：「有一顆 Pod 沒人管」。新手常想直接寫一顆 <code>selector.matchLabels</code> 與 template labels 不匹配的 ReplicaSet YAML 來觀察——<strong>不行</strong>，apiserver 會直接拒絕（錯誤訊息：<code>selector does not match template labels</code>）。真實世界的「selector 不匹配」多半是<strong>動態改 label</strong>造成的：Pod 的 label 一變，控制器就不認它了。繼續在實作 A 的叢集上：</p>
+
+<div class="terminal box">
+  <div class="box-title">改掉一顆 Pod 的 label，製造孤兒</div>
+  <pre><span class="comment"># 8. 先確認現在 3 顆 Pod 都掛著 app=nginx</span>
+<span class="prompt">kubectl get pods --show-labels</span>
+
+<span class="comment"># 9. 挑一顆，把它的 app 值改成 scratch。
+#    注意：app 鍵已存在，改值要加 --overwrite</span>
+<span class="prompt">kubectl label pod nginx-<span style="font-style:italic">(隨機尾碼)</span> app=scratch --overwrite</span>
+
+<span class="comment"># 10. 再看一次：Pod 變成 4 顆！
+#     新尾碼的那顆是 RS 補的（它只認 app=nginx，少了就補）；
+#     舊的那顆還 Running，但 label 已不合——它成了孤兒</span>
+<span class="prompt">kubectl get pods --show-labels</span>
+
+<span class="comment"># 11. 用 selector 分邊：誰是 RS 管的、誰是孤兒</span>
+<span class="prompt">kubectl get pods -l app=nginx</span>      <span class="comment"># 3 顆，RS 管的</span>
+<span class="prompt">kubectl get pods -l app=scratch</span>     <span class="comment"># 1 顆，孤兒</span>
+
+<span class="comment"># 12. 看 RS 的認人條件（SELECTOR 欄）</span>
+<span class="prompt">kubectl get rs -o wide</span>
+<span class="prompt">kubectl describe rs <span style="font-style:italic">(RS 名稱)</span></span>
+<span class="comment">#    SELECTOR 是 app=nginx,pod-template-hash=... 兩條件都得符合</span>
+
+<span class="comment"># 13. 修復：把孤兒的 app 改回 nginx。
+#     RS 一看到符合條件的 Pod 變 4 顆，立刻砍掉多出來的一顆</span>
+<span class="prompt">kubectl label pod <span style="font-style:italic">(孤兒 Pod 名稱)</span> app=nginx --overwrite</span>
+<span class="prompt">kubectl get pods --show-labels</span>   <span class="comment"># 回到 3 顆</span>
+
+<span class="comment"># 14. 收尾：刪 Deployment（它的 ReplicaSet 一起刪）
+#     （不想修復也可直接刪孤兒：kubectl delete pod <span style="font-style:italic">(孤兒名稱)</span>）</span>
+<span class="prompt">kubectl delete deployment nginx</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 10 步的關鍵是「4 顆」：RS 不會去刪除那顆被改標籤的 Pod（它只是不再認它），而是補一顆新的維持期望數 3。那顆舊 Pod 既不被 RS 管理、也不會被自我修復——<strong>這就是孤兒（orphan）</strong>。判讀 selector 不匹配的標準流程：<code>kubectl get rs -o wide</code> 對照 SELECTOR 欄與 <code>kubectl get pods --show-labels</code>，再用 <code>kubectl describe rs <span style="font-style:italic">(RS 名稱)</span></code> 確認。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>三個必背旗標：<code>--show-labels</code>（列出物件的 label）、<code>-l 'selector'</code>（依條件過濾）、<code>-L key</code>（大寫，直接多印一欄指定 label，例如 <code>kubectl get pods -L app</code>）。改已有 label 的值要加 <code>--overwrite</code>；刪 label 用 <code>key-</code>。看到「Pod 數量對不上」或「有顆 Pod 沒人管」時，第一件事就是比對 selector 與 labels。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你能寫出 equality-based 與 set-based 的 selector，並用 <code>-l</code> 過濾。</li>
+  <li>你能用 <code>kubectl label</code> 新增、修改（<code>--overwrite</code>）、移除（<code>key-</code>）label。</li>
+  <li>你能診斷「selector 不匹配 → Pod 孤立」，並把它修復回正常。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q"><code>app in (nginx, busybox)</code> 是哪一種 selector？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">等值式</button>
+    <button class="quiz-opt">集合式</button>
+    <button class="quiz-opt">刪除式</button>
+    <button class="quiz-opt">新增式</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q"><code>kubectl get pods -l app=nginx</code> 在做什麼？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">依標籤過濾</button>
+    <button class="quiz-opt">依名稱排序</button>
+    <button class="quiz-opt">顯示標籤欄</button>
+    <button class="quiz-opt">複製標籤組</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">RS 的 selector 與 Pod 標籤不匹配會怎樣？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">Pod 變成孤兒</button>
+    <button class="quiz-opt">Pod 自動修復</button>
+    <button class="quiz-opt">Pod 立即刪除</button>
+    <button class="quiz-opt">Pod 複製三份</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Labels &amp; Selectors 是「Deployment 做不到的場景」的地基。下一課我們看 DaemonSet（每台節點都要一顆）與 Job（跑完就結束）——它們同樣靠 selector 認領自己的 Pod。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/">Labels and Selectors（官方文件）</a> —— 本課的權威版。重點讀「Syntax and character set」與「Selector」兩節，約 10 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

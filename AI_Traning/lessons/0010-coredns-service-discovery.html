@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0010 — CoreDNS 與服務發現</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 3 · 對應考綱：<a href="../reference/cka-domain-map.html">Services &amp; Networking（20%）</a> · 需時約 20 分鐘</p>
+
+<h1>CoreDNS 與服務發現</h1>
+
+<p>0009 的 Service 給了每群 Pod 一個 VIP，但你總不能叫工程師都背 VIP。本課把「找到對方」變成一件靠名字的事：叢集內建的 DNS——<a href="../reference/glossary.html">CoreDNS</a>。學會兩件事：① Service 的<strong>完整網域名稱（FQDN）長什麼樣、怎麼縮寫</strong>；② 出問題時，<strong>DNS 層與 Endpoints 層怎麼分</strong>（這是 CKA Troubleshooting 的經典分層）。本課沿用 0009 的雙節點叢集。</p>
+
+<h2>Service 的 FQDN 樣板</h2>
+<p>每個 Service 都會被 CoreDNS 登記一個 A record，樣板長這樣：</p>
+
+<div class="terminal box">
+  <div class="box-title">FQDN 樣板（背起來）</div>
+  <pre>&lt;service&gt;.&lt;namespace&gt;.svc.&lt;cluster-domain&gt;
+     │        │        │        └─ 預設 svc.cluster.local
+     │        │        └─ 固定是 svc（表示 Service）
+     │        └─ Service 所在的 namespace
+     └─ Service 名稱
+
+hello.default.svc.cluster.local   ← 全名（FQDN）
+hello                              ← 短名：靠 resolv.conf 的 search 補後綴</pre>
+</div>
+
+<p>Pod 內的 <code>/etc/resolv.conf</code> 由 kubelet 自動生成：<code>nameserver</code> 指向 kube-system 的 <code>kube-dns</code> Service（CoreDNS 的前端），<code>search</code> 則列了一串要自動補的後綴（通常含 <code>&lt;pod 的 namespace&gt;.svc.cluster.local</code> 等）——這就是「同 namespace 裡打短名就通」的原因。另外一個細節：<code>ndots:5</code> 代表名稱裡<strong>有 5 個點（含）以上</strong>才先當 FQDN 查，否則先套 search 後綴試試看。</p>
+
+<h2>A record 與 SRV record</h2>
+<ul>
+  <li><strong>A record</strong>：Service 名稱 → VIP。Headless Service（0009 的 <code>clusterIP: None</code>）則回傳它身後每顆 Pod 的 IP——這是資料庫類工作負載「直接連各顆 Pod」的機制。</li>
+  <li><strong>SRV record</strong>：Service 有「具名 port」時，<code>_&lt;port-name&gt;._&lt;protocol&gt;.&lt;svc&gt;... </code> 會回傳「哪個 port 在服務」。</li>
+</ul>
+<p>CoreDNS 是一顆跑在 kube-system 的 Deployment，它 watch Service／Pod 的變化來更新紀錄；設定存在 <code>ConfigMap/coredns</code> 的 <strong>Corefile</strong> 裡。</p>
+
+<h2>實作 A：短名、全名、跨 namespace</h2>
+
+<div class="terminal box">
+  <div class="box-title">準備可解析的服務與客戶端</div>
+  <pre><span class="comment"># 1. 確認 0009 的 client pod 還在且 Running（NotFound 或已 Completed 都重建）</span>
+<span class="prompt">kubectl get pod client</span>
+<span class="comment">#    若非 Running：kubectl delete pod client --ignore-not-found
+#    kubectl run client --image=busybox:1.36 --restart=Never -- sleep 3600
+#    kubectl wait --for=condition=Ready pod/client</span>
+
+<span class="comment"># 2. 佈一顆要被解析的 nginx 服務</span>
+<span class="prompt">kubectl create deployment hello --image=nginx:1.25 --replicas=1</span>
+<span class="prompt">kubectl expose deployment hello --port=80</span>
+<span class="prompt">kubectl rollout status deployment/hello</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">解析：全名、短名、resolv.conf</div>
+  <pre><span class="comment"># 3. 看 Pod 內的 DNS 設定：nameserver = kube-dns、search 幫你補後綴</span>
+<span class="prompt">kubectl exec client -- cat /etc/resolv.conf</span>
+
+<span class="comment"># 4. 全名解析（busybox 的 nslookup 不吃 search 自動補，給全名最保險）</span>
+<span class="prompt">kubectl exec client -- nslookup hello.default.svc.cluster.local</span>
+
+<span class="comment"># 5. 短名「hello」會通，是因為 search 欄自動補上 default.svc.cluster.local</span>
+<span class="prompt">kubectl exec client -- wget -qO- http://hello | head -n 3</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">跨 namespace：只能用全名</div>
+  <pre><span class="comment"># 6. 開一個 team-a namespace，放一支 api 服務</span>
+<span class="prompt">kubectl create ns team-a</span>
+<span class="prompt">kubectl -n team-a create deployment api --image=nginx:1.25 --replicas=1</span>
+<span class="prompt">kubectl -n team-a expose deployment api --port=80</span>
+
+<span class="comment"># 7. 從 default namespace 用全名打過去</span>
+<span class="prompt">kubectl exec client -- nslookup api.team-a.svc.cluster.local</span>
+<span class="prompt">kubectl exec client -- wget -qO- http://api.team-a.svc.cluster.local | head -n 3</span>
+<span class="comment">#    短名 http://api 在這裡不通——client 的 search 只會補 default 的後綴</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 4–5 步的對照是 DNS 縮寫機制的全部：<strong>全名一定通；短名通不通看 search 欄</strong>。第 7 步是跨 namespace 的唯一寫法：<code>服務名.namespace.svc.cluster.local</code>。想在別的 namespace 用短名？把 Pod 建到同一個 namespace，或自己改 <code>dnsConfig</code>——考試知道「預設短名只在本 namespace 有效」即可。</p>
+</div>
+
+<h2>實作 B：故障分層——名字錯 vs 後端空</h2>
+<p>接下來演練 CKA 最愛考的「分層判斷」：同樣是「連不到」，是 <strong>DNS 找不到名字</strong>，還是 <strong>DNS 找得到但沒後端可連</strong>？兩層的症狀完全不同。</p>
+
+<div class="terminal box">
+  <div class="box-title">第一層：名字打錯（NXDOMAIN）</div>
+  <pre><span class="comment"># 8. 名稱不存在：CoreDNS 回 NXDOMAIN——這是「DNS 層」的問題</span>
+<span class="prompt">kubectl exec client -- nslookup hello.wrong.svc.cluster.local</span>
+<span class="comment">#    輸出會有 "can't find" / NXDOMAIN</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">第二層：Service 存在但 selector 沒打到任何 Pod</div>
+  <pre><span class="comment"># 9. 造一顆 selector 對不到任何 Pod 的 Service（名字 ghost）</span>
+<span class="prompt">kubectl create -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Service</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: ghost</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  selector:</span>
+<span class="prompt">    app: no-such-app</span>
+<span class="prompt">  ports:</span>
+<span class="prompt">  - port: 80</span>
+<span class="prompt">EOF</span>
+
+<span class="comment"># 10. DNS 解析得到 ghost（Service 存在就有 A record）——DNS 層正常</span>
+<span class="prompt">kubectl exec client -- nslookup ghost.default.svc.cluster.local</span>
+
+<span class="comment"># 11. 但 Endpoints 是空的——後端空，連線被拒</span>
+<span class="prompt">kubectl get endpoints ghost</span>
+<span class="prompt">kubectl exec client -- wget -qO- -T 3 http://ghost || echo '-- connection refused --'</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>對照第 8 與 10–11 步：<strong>名字打錯 = DNS 直接說查無此人（NXDOMAIN）；selector 沒打到 = DNS 說有這個 Service，但 Endpoints 空空如也、TCP 連不上。</strong>除錯順序從此建立：先 <code>nslookup</code> 確認 DNS 層，再 <code>get endpoints</code> 確認後端層——兩層都通才輪到看 Pod 本身。0019 會把這條鏈接上 NetworkPolicy。</p>
+</div>
+
+<h2>實作 C：看看 CoreDNS 本尊</h2>
+
+<div class="terminal box">
+  <div class="box-title">CoreDNS 的 Pod 與服務</div>
+  <pre><span class="comment"># 12. CoreDNS 以 Deployment 跑在 kube-system，label 是 k8s-app=kube-dns</span>
+<span class="prompt">kubectl get pods -n kube-system -l k8s-app=kube-dns</span>
+
+<span class="comment"># 13. Pod 的 resolv.conf 指到的 kube-dns Service（ClusterIP）</span>
+<span class="prompt">kubectl get svc -n kube-system kube-dns</span>
+
+<span class="comment"># 14. Corefile：CoreDNS 的設定檔（kubernetes 區塊負責 cluster.local 的紀錄）</span>
+<span class="prompt">kubectl get configmap -n kube-system coredns -o yaml</span>
+<span class="comment">#    看到 kubernetes cluster.local in-addr.arpa ip6.arpa 那幾行，就是它</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾</div>
+  <pre><span class="comment"># 15. 刪掉本課練習資源（client pod 也一起結束）</span>
+<span class="prompt">kubectl delete deployment hello</span>
+<span class="prompt">kubectl delete svc hello ghost</span>
+<span class="prompt">kubectl delete ns team-a</span>
+<span class="prompt">kubectl delete pod client</span>
+
+<span class="comment"># 16. 課末確認：叢集乾淨、雙節點</span>
+<span class="prompt">kubectl get pods,svc</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① FQDN 樣板：<code>&lt;svc&gt;.&lt;ns&gt;.svc.cluster.local</code>；同 namespace 可用短名（search 幫你補）。② 除錯兩層：<code>nslookup 名字</code>（DNS 層）→ <code>get endpoints</code>（後端層）→ 再看 Pod。③ DNS 有回應不代表服務能用：<strong>NXDOMAIN＝名字錯；解析成功但連不上＝後端空或 NetworkPolicy</strong>。④ 進 pod 看設定：<code>cat /etc/resolv.conf</code>（nameserver 應是 kube-dns）。⑤ headless 的 A record 直接回 Pod IP 群。⑥ CoreDNS 設定檔在 ConfigMap/coredns（Corefile）。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你背下 Service FQDN 樣板，並用短名／全名／跨 namespace 三種方式解析成功。</li>
+  <li>你親手製造「NXDOMAIN」與「Endpoints 空」兩種故障，建立 DNS 層與後端層的分層除錯。</li>
+  <li>你找到 CoreDNS 的 Pod、kube-dns Service 與 Corefile ConfigMap。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">Service hello 在 team-a namespace 的全名是？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">hello.svc.team-a</button>
+    <button class="quiz-opt">hello.team-a.svc.cluster.local</button>
+    <button class="quiz-opt">team-a.hello.svc</button>
+    <button class="quiz-opt">hello.cluster.local</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">nslookup 回 NXDOMAIN 代表？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">後端 Pod 掛了</button>
+    <button class="quiz-opt">NetworkPolicy 擋住</button>
+    <button class="quiz-opt">名字不存在</button>
+    <button class="quiz-opt">port 錯誤</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">短名在同 namespace 能通，靠的是 resolv.conf 的哪一行？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">search</button>
+    <button class="quiz-opt">nameserver</button>
+    <button class="quiz-opt">ndots</button>
+    <button class="quiz-opt">options</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Pod 之間用 Service 名字互相找到了。下一課把入口開到「叢集外面」：<a href="../reference/glossary.html">Ingress</a>——用「網址 + 路徑」把外部 HTTP/HTTPS 流量路由到不同 Service（L7），會重建一個開好 host port 的叢集並安裝 ingress-nginx。也預告 <a href="../reference/glossary.html">Gateway API</a> 的概念位置。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/">DNS for Services and Pods（官方文件）</a> —— 本課的權威版。重點讀「DNS records」那節（Service A/AAAA、SRV、Pod 的 hostname），約 10 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

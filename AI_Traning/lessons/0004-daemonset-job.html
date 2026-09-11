@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0004 — DaemonSet 與 Job（Deployment 做不到的場景）</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 1 · 對應考綱：<a href="../reference/cka-domain-map.html">Workloads &amp; Scheduling（15%）</a> · 需時約 25 分鐘</p>
+
+<h1>DaemonSet 與 Job（Deployment 做不到的場景）</h1>
+
+<p>到目前為止你學的 Deployment，本質是「隨時維持 N 顆、永不結束」的長期服務——它管副本數、換版本、自我修復，Pod 永遠在跑。但有兩種常見場景它做不到：<strong>每台節點都要一顆</strong>（日誌收集、監控 agent、CNI 網路外掛），以及<strong>跑完就結束</strong>（批次任務）。本課的主角就是為這兩種場景而生的 <a href="../reference/glossary.html">DaemonSet</a> 與 <a href="../reference/glossary.html">Job</a>，最後用幾分鐘認識定時版的 Job——<a href="../reference/glossary.html">CronJob</a>。它們全部沿用 0003 的「label selector 認人」機制：控制器只認標籤符合條件的 Pod，誰管誰還是靠 selector。</p>
+
+<h2>四控制器：誰在什麼時候補 Pod？</h2>
+<p>把 0001–0003 學過的 Deployment 放進更大的版圖：控制器之間最大的差別，就是<strong>「什麼情況會觸發它補 Pod」</strong>。</p>
+
+<table>
+  <thead>
+    <tr><th>控制器</th><th>何時補 Pod</th><th>典型場景</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Deployment</strong></td>
+      <td>副本數不足時（補數量）</td>
+      <td>Web／API 等長期服務</td>
+    </tr>
+    <tr>
+      <td><strong>DaemonSet</strong></td>
+      <td>有節點需要時（每節點一顆）</td>
+      <td>日誌收集、監控 agent、CNI</td>
+    </tr>
+    <tr>
+      <td><strong>Job</strong></td>
+      <td>任務失敗時（補失敗、不補成功）</td>
+      <td>批次任務、一次性初始化</td>
+    </tr>
+    <tr>
+      <td><strong>CronJob</strong></td>
+      <td>時間到時（定時生一個 Job）</td>
+      <td>定時備份、定期清理</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>一句話記法（之後直接背這個）：<strong>Deployment 補數量、DaemonSet 補節點、Job 補失敗、CronJob 補時間。</strong></p>
+
+<h2>DaemonSet：每台節點一顆</h2>
+<p>DaemonSet（簡寫 <code>ds</code>）的期望狀態不是「N 顆」，而是<strong>「每台節點剛好一顆」</strong>：叢集新增節點，它自動在那台長一顆；節點被移走，那顆就跟著收掉。你可能早就用著它而不自知——kube-system 裡的 <code>kindnet</code>（CNI）與 <code>kube-proxy</code> 都是 DaemonSet，因為「網路服務」每台節點都必須有。控制器鏈是 DaemonSet → Pod，沒有中間的 ReplicaSet。它的運作方式與你在 0003 問過的機制同一條路：DaemonSet 控制器 watch apiserver 的節點事件，收到節點加入或離開就重新 reconcile。</p>
+
+<div class="warn box">
+  <div class="box-title">CKA 重點：DaemonSet 沒有 create 指令</div>
+  <p><code>kubectl create daemonset</code> <strong>不存在</strong>——kubectl 只為少數物件提供 create 指令（deployment、job、namespace…）。想建 DaemonSet 只能寫 YAML，這是 CKA 愛考的情境。記得 0003 的規則：<code>selector.matchLabels</code> 必須與 template 的 labels 一致，否則 apiserver 直接拒絕（錯誤訊息 <code>selector does not match template labels</code>）。</p>
+</div>
+
+<h2>實作 A：重建雙節點叢集 + 自訂 DaemonSet</h2>
+<p>單節點叢集看不到「每節點一顆」的意義。本課先把叢集重建回 0001「選配」教過的雙節點版（control-plane + worker）。</p>
+
+<div class="warn box">
+  <div class="box-title">重建前先知道</div>
+  <p><code>kind delete cluster</code> 會把現有叢集<strong>整個刪掉</strong>——0002/0003 練習的物件會一併消失，沒關係。重建約需 2 分鐘，kind 會自動更新 kubeconfig，重建後 kubectl 直接可用。本課結束後<strong>不要刪掉這個雙節點叢集</strong>，後續資源與排程課要用。</p>
+</div>
+
+<p>開一個 PowerShell 新視窗，建個練習資料夾，並用記事本建立設定檔（貼上存檔即可）：</p>
+
+<div class="terminal box">
+  <div class="box-title">準備練習資料夾與 kind-config.yaml</div>
+  <pre><span class="comment"># 新開資料夾並進入（之後的 yaml 檔都放這裡）</span>
+<span class="prompt">mkdir practice</span>
+<span class="prompt">cd practice</span>
+<span class="prompt">notepad kind-config.yaml</span>
+
+<span class="comment"># 記事本內容——kind-config.yaml（0001 選配段同一份）：</span>
+<span class="prompt">kind: Cluster</span>
+<span class="prompt">apiVersion: kind.x-k8s.io/v1alpha4</span>
+<span class="prompt">nodes:</span>
+<span class="prompt">- role: control-plane</span>
+<span class="prompt">- role: worker</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">重建為雙節點叢集</div>
+  <pre><span class="comment"># 1. 先確認目前只有一台節點（kind 單節點的預設）</span>
+<span class="prompt">kubectl get nodes</span>
+
+<span class="comment"># 2. 刪掉舊叢集</span>
+<span class="prompt">kind delete cluster</span>
+
+<span class="comment"># 3. 用雙節點設定檔重建（約 2 分鐘）</span>
+<span class="prompt">kind create cluster --config kind-config.yaml</span>
+
+<span class="comment"># 4. 這次應該有兩台：kind-control-plane 與 kind-worker</span>
+<span class="prompt">kubectl get nodes</span>
+
+<span class="comment"># 5. 看 kube-system 的現成 DaemonSet——DESIRED/CURRENT 從 1 變成 2</span>
+<span class="prompt">kubectl get ds -n kube-system</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 5 步的 <code>kindnet</code> 與 <code>kube-proxy</code>，DESIRED、CURRENT、READY 都是 2——我們什麼都沒做，DaemonSet 就自動在新增的 worker 節點上各長了一顆。這就是「每節點一顆」：<strong>不是設定副本數，是節點數決定了 Pod 數。</strong></p>
+</div>
+
+<p>現在動手寫自己的 DaemonSet。注意 <code>selector.matchLabels</code> 與 <code>template</code> 的 labels 都是 <code>app: node-monitor</code>——不一致會被 apiserver 拒絕。</p>
+
+<div class="terminal box">
+  <div class="box-title">ds.yaml（記事本貼上這份內容存檔）</div>
+  <pre><span class="comment"># ds.yaml — 每台節點都跑一個監控 agent</span>
+<span class="prompt">apiVersion: apps/v1</span>
+<span class="prompt">kind: DaemonSet</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: node-monitor</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  selector:</span>
+<span class="prompt">    matchLabels:</span>
+<span class="prompt">      app: node-monitor</span>
+<span class="prompt">  template:</span>
+<span class="prompt">    metadata:</span>
+<span class="prompt">      labels:</span>
+<span class="prompt">        app: node-monitor</span>
+<span class="prompt">    spec:</span>
+<span class="prompt">      containers:</span>
+<span class="prompt">      - name: agent</span>
+<span class="prompt">        image: busybox:1.36</span>
+<span class="prompt">        command: ["sh", "-c", "echo agent on $(hostname); sleep 3600"]</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用並驗證「每節點一顆」</div>
+  <pre><span class="comment"># 6. 用記事本建檔（內容貼上方那份）</span>
+<span class="prompt">notepad ds.yaml</span>
+
+<span class="comment"># 7. 套用 DaemonSet</span>
+<span class="prompt">kubectl apply -f ds.yaml</span>
+
+<span class="comment"># 8. -o wide 看 NODE 欄：兩顆 Pod 各在一台節點</span>
+<span class="prompt">kubectl get pods -o wide -l app=node-monitor</span>
+
+<span class="comment"># 9. 看 DS 狀態：DESIRED/CURRENT/READY 都是 2</span>
+<span class="prompt">kubectl get ds</span>
+
+<span class="comment"># 10. 刪掉其中一顆（尾碼隨機）——DS 版的自我修復</span>
+<span class="prompt">kubectl delete pod node-monitor-<span style="font-style:italic">(隨機尾碼)</span></span>
+
+<span class="comment"># 11. -w 觀察：同台節點立刻補一顆新的（尾碼變了；Ctrl+C 離開）</span>
+<span class="prompt">kubectl get pods -o wide -l app=node-monitor -w</span>
+
+<span class="comment"># 12. 確認 READY 回到 2 之後，收尾刪掉 DS</span>
+<span class="prompt">kubectl get ds</span>
+<span class="prompt">kubectl delete ds node-monitor</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 10–11 步是 DaemonSet 版的自我修復，但方向跟 Deployment 不同：Deployment 補回「少掉的數量」；DaemonSet 補回「少掉的節點」——所以新 Pod 會出現在<strong>被你刪掉的那一顆原本所在的節點</strong>，維持每節點一顆。第 8 步的 NODE 欄正是這堂課最想讓你看見的東西。</p>
+</div>
+
+<h2>Job：跑完就結束的控制器</h2>
+<p>Deployment 的 Pod「永遠不該結束」；Job 的 Pod 則<strong>生來就是要結束的</strong>。Job 的期望狀態是「成功跑完 <code>completions</code> 次」，而不是「一直有 N 顆」：</p>
+<ul>
+  <li><code>completions</code>：總共要成功幾次（預設 1）。</li>
+  <li><code>parallelism</code>：同時最多跑幾顆（預設 1）。</li>
+  <li><code>backoffLimit</code>：失敗重試上限（預設 6）。</li>
+  <li><code>restartPolicy</code>：只能是 <code>Never</code> 或 <code>OnFailure</code>——不能是 <code>Always</code>（跟 Deployment 最大的語法差別，因為「跑完重開機」對 Job 沒意義）。</li>
+</ul>
+<p>Job 的自我修復口訣是<strong>「補失敗、不補成功」</strong>：Pod 失敗了就換一顆重試；任務一旦成功，那顆 Pod 保持 <code>Completed</code> 狀態、不再重啟——這正是與 Deployment 的最大差異。用 <code>kubectl create job</code> 就能快速建最簡單的 Job——但它<strong>只有 <code>--image</code> 與 <code>--from</code> 兩個專屬旗標</strong>；<code>completions</code>／<code>parallelism</code> 是 spec 欄位、沒有對應旗標，必須用 YAML 設定（實作 B 會練這套工作法，也是 CKA 陷阱）。</p>
+
+<h2>實作 B：動手建 Job</h2>
+<p>叢集保持雙節點，繼續照打：</p>
+
+<div class="terminal box">
+  <div class="box-title">最簡單的 Job：echo 一次就結束</div>
+  <pre><span class="comment"># 13. hello：echo 印一句就成功結束</span>
+<span class="prompt">kubectl create job hello --image=busybox:1.36 -- echo "Job completed"</span>
+
+<span class="comment"># 14. 看 Job：COMPLETIONS 1/1</span>
+<span class="prompt">kubectl get jobs</span>
+
+<span class="comment"># 15. 看 Pod：STATUS = Completed（Deployment 的 Pod 永遠不會這樣）</span>
+<span class="prompt">kubectl get pods</span>
+
+<span class="comment"># 16. 直接抓整個 Job 的日誌，不用先查 Pod 名稱</span>
+<span class="prompt">kubectl logs job/hello</span>
+
+<span class="comment"># 17. 看 Events：SuccessfulCreate</span>
+<span class="prompt">kubectl describe job hello</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 15 步那顆 <code>Completed</code> 的 Pod <strong>不會自己消失，也不會被重啟</strong>——任務完成就是它的終點。第 16 步的 <code>kubectl logs job/NAME</code> 是 CKA 好用的省事指令：kubectl 自動用 <code>job-name</code> label 找出該 Job 的 Pod 抓日誌。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">Job 完成後，刪 Pod 不會重生</div>
+  <pre><span class="comment"># 18. 故意刪掉那顆 Completed 的 Pod（尾碼看第 15 步輸出）</span>
+<span class="prompt">kubectl delete pod hello-<span style="font-style:italic">(隨機尾碼)</span></span>
+
+<span class="comment"># 19. 再列一次：沒有新 Pod 補上——Job 已完成，不補成功</span>
+<span class="prompt">kubectl get pods</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">YAML 工作法：dry-run 產出再存檔（CKA 核心）</div>
+  <pre><span class="comment"># 20. --dry-run=client -o yaml：先印出 YAML（不真正建立）</span>
+<span class="prompt">kubectl create job yaml-demo --image=busybox:1.36 --dry-run=client -o yaml -- echo hi</span>
+
+<span class="comment"># 21. 輸出改存成 job.yaml（PowerShell 寫法；見下方 warn）</span>
+<span class="prompt">kubectl create job yaml-demo --image=busybox:1.36 --dry-run=client -o yaml -- echo hi | Out-File job.yaml -Encoding utf8</span>
+
+<span class="comment"># 22. 用記事本打開檢查（可看到 apiVersion: batch/v1），改好再套用</span>
+<span class="prompt">notepad job.yaml</span>
+<span class="prompt">kubectl apply -f job.yaml</span>
+
+<span class="comment"># 23. yaml-demo 也完成了</span>
+<span class="prompt">kubectl get jobs</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">PowerShell 陷阱：`&gt;` 存成 UTF-16</div>
+  <p>在 Windows PowerShell 用 <code>kubectl ... &gt; job.yaml</code> 存檔，會寫成 <strong>UTF-16</strong>，kubectl 讀不到（報錯：<code>error converting YAML to JSON</code>）。所以上面第 21 步改用 <code>| Out-File job.yaml -Encoding utf8</code>。考場是 Linux/WSL2，可直接用 <code>kubectl ... &gt; job.yaml</code>——養成習慣：<strong>在 PowerShell 一律用 Out-File</strong>。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">completions 與 parallelism：用 YAML 設定批次任務</div>
+  <pre><span class="comment"># 24. 先印出 YAML——注意 dry-run 輸出裡沒有 completions／parallelism（它們是 spec 欄位，不是旗標）</span>
+<span class="prompt">kubectl create job multi --image=busybox:1.36 --dry-run=client -o yaml -- sh -c 'echo task; sleep 5'</span>
+
+<span class="comment"># 25. 同一支指令改存成 multi.yaml（create job 沒有 --completions／--parallelism 旗標）</span>
+<span class="prompt">kubectl create job multi --image=busybox:1.36 --dry-run=client -o yaml -- sh -c 'echo task; sleep 5' | Out-File multi.yaml -Encoding utf8</span>
+
+<span class="comment"># 26. 記事本打開，在 spec: 底下、template: 上面加兩行（縮排與 template: 相同，都是兩格）</span>
+<span class="comment">#     completions: 3   ← 總共要成功 3 次</span>
+<span class="comment">#     parallelism: 2   ← 最多同時 2 顆</span>
+<span class="prompt">notepad multi.yaml</span>
+
+<span class="comment"># 27. 套用後：Job 先同時跑 2 顆，完成的空位會補新任務</span>
+<span class="prompt">kubectl apply -f multi.yaml</span>
+
+<span class="comment"># 28. -w 觀察：先 2 顆並行，完成的空位會補新任務（Ctrl+C 離開）</span>
+<span class="prompt">kubectl get pods -w</span>
+
+<span class="comment"># 29. 全部成功：COMPLETIONS 3/3</span>
+<span class="prompt">kubectl get jobs</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">多顆 Pod 的 Job 要看全部日誌？</div>
+  <p>第 29 步的 <code>multi</code> 有三顆 Pod。想抓整個 Job 的日誌時，<code>kubectl logs job/multi</code> 預設只挑一顆，並提示 <code>Found 3 pods, using pod/multi-...</code>。想看所有 Pod 的輸出、而且每行標明是哪一顆 Pod 來的，加 <code>--all-pods=true</code>：<code>kubectl logs job/multi --all-pods=true</code>。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">失敗重試：Job 補失敗、不補成功</div>
+  <pre><span class="comment"># 30. 一支注定失敗的任務（exit 1）</span>
+<span class="prompt">kubectl create job fail --image=busybox:1.36 -- sh -c 'exit 1'</span>
+
+<span class="comment"># 31. 列 Pod：Job 一直換新 Pod 重試，每顆都以失敗收場</span>
+<span class="prompt">kubectl get pods</span>
+
+<span class="comment"># 32. 看重試紀錄（Events 有 Backoff）；看到換了 2–3 顆就夠了</span>
+<span class="prompt">kubectl describe job fail</span>
+
+<span class="comment"># 33. 不繼續等了——backoffLimit 預設 6 會重試很久。直接刪掉</span>
+<span class="prompt">kubectl delete job fail</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">為什麼步驟 33 不等它自然結束？</div>
+  <p>Job 的重試間隔是<strong>指數退避</strong>：10s → 20s → 40s → 80s → 160s → 320s（單次上限 6 分鐘）。<code>backoffLimit</code> 預設 6——要等這 6 次失敗全部吃完，Job 才標成 <code>Failed</code>，合計約 10 分鐘以上。所以步驟 33 直接刪掉，不陪它等。考場想快速看到 Job 自然失敗結束：在 YAML 的 <code>spec:</code> 加 <code>backoffLimit: 0</code>，第一顆失敗就結案。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">執行中的 Job Pod 被刪掉呢？</div>
+  <p>上面看到「已完成的 Pod 刪了不補」。反過來，如果刪的是<strong>還在執行中</strong>的 Job Pod，Job 會補一顆新的續跑（任務還沒完成）。想親眼驗證：先 <code>kubectl delete job multi</code>，把 multi.yaml 的 <code>sleep 5</code> 改成 <code>sleep 60</code>，再 <code>kubectl apply -f multi.yaml</code>——趁它跑的時候開第二個終端機刪一顆 Pod，再看 <code>kubectl get pods -w</code>，新 Pod 會接手。看完記得 <code>kubectl delete job multi</code>。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾：刪掉本課所有 Job</div>
+  <pre><span class="comment"># 34. 收尾：刪掉本課所有 Job（hello/yaml-demo/multi/fail 與它們的 Pod）</span>
+<span class="prompt">kubectl delete jobs --all</span></pre>
+</div>
+
+<h2>CronJob：時間到就生一個 Job</h2>
+<p>Job 的定時版就是 CronJob（<code>cronjob</code>/<code>cj</code>）：它不直接生 Pod，而是照 cron 的五欄排程（分 時 日 月 週）<strong>定時建立一個 Job</strong>——所以是一條更長的控制器鏈：<strong>CronJob → Job → Pod</strong>。適合定時備份、定期清理這類工作。</p>
+
+<div class="terminal box">
+  <div class="box-title">實作 C：每分鐘跑一次的 CronJob（迷你版）</div>
+  <pre><span class="comment"># 35. 建立每分鐘執行一次的 CronJob（schedule 用雙引號包住）</span>
+<span class="prompt">kubectl create cronjob minute --image=busybox:1.36 --schedule="*/1 * * * *" -- date</span>
+
+<span class="comment"># 36. 看 SCHEDULE（LAST SCHEDULE 還是 &lt;none&gt;）</span>
+<span class="prompt">kubectl get cronjob</span>
+
+<span class="comment"># 37. 等 1–2 分鐘到整分，會出現 minute-xxxxx 的 Job——時間到，CronJob 生了一個 Job</span>
+<span class="prompt">kubectl get jobs</span>
+
+<span class="comment"># 38. 收尾：刪 CronJob（已產生的 Job/Pod 不會自動消失，一起清掉）</span>
+<span class="prompt">kubectl delete cronjob minute</span>
+<span class="prompt">kubectl delete jobs --all</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 37 步的 <code>minute-xxxxx</code> 就是「時間到了，CronJob 幫你 create 的那個 Job」——它又走一遍 Job 的流程：生 Pod、跑 <code>date</code>、完成後保持 Completed。三層控制器各管各的：CronJob 管時間、Job 管完成、Pod 管執行。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">每分鐘一顆，Completed 的 Job 不會越堆越多嗎？</div>
+  <p>不會。CronJob 會<strong>自動回收</strong>超過上限的已完成 Job：<code>successfulJobsHistoryLimit</code> 保留最近幾顆成功的（<strong>預設 3</strong>）、<code>failedJobsHistoryLimit</code> 保留最近幾顆失敗的（<strong>預設 1</strong>）——新的一顆生出來，最舊的就連 Pod 一起被控制器刪掉，所以 <code>kubectl get jobs</code> 不會越列越長。</p>
+  <p>想自訂要放對層：這兩個歷史欄位寫在 CronJob 的 <code>spec:</code>（<code>jobTemplate</code> 外面）；想讓 Job 跑完後自動倒數刪除，用 <code>ttlSecondsAfterFinished</code>，寫在 <code>jobTemplate.spec:</code>（跟 <code>backoffLimit</code> 同層）。兩者都<strong>不是</strong> pod template 的欄位——口訣：<strong>誰的欄位就放誰的 spec</strong>。想完全不保留歷史，把兩個 historyLimit 都設 0。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">CronJob 跑完的日誌會保留嗎？</div>
+  <p>日誌跟著 <strong>Pod</strong>，不跟著 CronJob/Job 物件——<code>kubectl logs</code> 讀的是節點上 container runtime 的檔案。所以日誌壽命 = Job/Pod 的壽命：在 historyLimit 留住的窗口內（成功 3、失敗 1），<code>kubectl logs job/minute-xxxxx</code> 查得到；Job 一被回收，Pod 連日誌一併消失。</p>
+  <p>想留更久：① 治標——調大 historyLimit 或 <code>ttlSecondsAfterFinished</code> 延長物件壽命；② 正解——<strong>外部集中日誌</strong>（Loki、EFK、雲端方案），k8s 本身不保存歷史日誌。考場觀念：刪 Job = 連 Pod 一起刪 = 日誌沒了，要撈趁物件還在。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>五個必背反射動作：① DaemonSet <strong>沒有</strong> <code>create daemonset</code>，只能寫 YAML——趕時間時可先 <code>kubectl create deployment</code> 用 <code>--dry-run=client -o yaml</code> 產出，再把 <code>kind</code> 改成 <code>DaemonSet</code>、拿掉 <code>replicas</code>。② <code>create job</code> 只有 <code>--image</code>／<code>--from</code>——<strong>沒有</strong> <code>--completions</code>／<code>--parallelism</code>；批次欄位用 <code>--dry-run=client -o yaml</code> 產出 YAML 加上去再 apply。③ Job 日誌：<code>kubectl logs job/NAME</code>——多顆 Pod 時加 <code>--all-pods=true</code> 一次看全部。④ Job 卡住排查：<code>kubectl describe job NAME</code> 配 <code>kubectl get pods -l job-name=NAME</code>；想讓必失敗的 Job 快速結案，YAML 設 <code>backoffLimit: 0</code>。⑤ 四控制器口訣：<strong>Deployment 補數量、DaemonSet 補節點、Job 補失敗、CronJob 補時間</strong>。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你用 YAML 建出 DaemonSet，並親眼看到「每節點一顆」與「刪掉補回同節點」的自我修復。</li>
+  <li>你用 <code>kubectl create job</code> 建一次性任務，並用 dry-run 產生的 YAML 設定 <code>completions</code>／<code>parallelism</code> 控制批次，還會用 <code>kubectl logs job/NAME</code> 直取日誌。</li>
+  <li>你觀察到 Job「補失敗、不補成功」，以及失敗重試（backoffLimit）的行為。</li>
+  <li>你學會 dry-run 產 YAML 的工作法，並知道 PowerShell <code>&gt;</code> 的 UTF-16 陷阱（改用 Out-File）。</li>
+  <li>你簡短認識了 CronJob（時間到就生 Job），並把叢集升級成雙節點保留給後續課程。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">DaemonSet 的投放原則是什麼？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">每個叢集一顆</button>
+    <button class="quiz-opt">每個節點一顆</button>
+    <button class="quiz-opt">每個租戶一顆</button>
+    <button class="quiz-opt">每個容器一顆</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Job 的 Pod 成功跑完後會怎樣？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">保持完成狀態</button>
+    <button class="quiz-opt">自動重啟循環</button>
+    <button class="quiz-opt">立即刪除自己</button>
+    <button class="quiz-opt">複製三份副本</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">CronJob 的本質工作是什麼？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">定時建立 Job</button>
+    <button class="quiz-opt">定時喚醒 Pod</button>
+    <button class="quiz-opt">定時重啟 Pod</button>
+    <button class="quiz-opt">定時調度 Pod</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>四種控制器補齊了。Phase 1 的最後一塊拼圖是「資源與排程」：Pod 的資源需求（requests／limits）、節點如何用 taint／toleration 決定誰能排上去（0001 預告過：正式 control-plane 的污點）、以及 affinity 的親和性調度。下一課開始回收這些伏筆。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/concepts/workloads/controllers/daemonset/">DaemonSet（官方文件）</a>與<a href="https://kubernetes.io/docs/concepts/workloads/controllers/job/">Jobs（官方文件）</a> —— 本課的權威版。Job 那篇重點讀「Completions／Parallelism」與「Handling Pod and container failures」（backoffLimit）兩節，約 15 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

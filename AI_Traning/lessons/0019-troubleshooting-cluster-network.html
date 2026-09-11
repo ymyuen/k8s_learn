@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0019 — 故障排除 II：節點、控制平面與網路服務</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 5 · 對應考綱：<a href="../reference/cka-domain-map.html">Troubleshooting（30%）</a> · 需時約 30 分鐘</p>
+
+<h1>故障排除 II：節點、控制平面與網路服務</h1>
+
+<p>0018 學會修「單顆 Pod」；本課把視野往上推兩層：① <strong>節點</strong>（NotReady、條件判讀）與 <strong>控制平面</strong>（static pod 巡檢），② 把 0010 的「分層除錯」擴大成<strong>端到端故障鏈</strong>——從 curl 不通一路查到 NetworkPolicy。叢集沿用 Calico 雙節點。</p>
+
+<div class="warn box">
+  <div class="box-title">開場先補裝 metrics-server</div>
+  <p>0007 裝的 metrics-server 在 0011／0012 兩次重建叢集時被洗掉了。本課開場把它補回來（本課與 0020 的 <code>kubectl top</code> 都靠它），指令與 0007 完全相同。</p>
+</div>
+
+<h2>節點層：describe node 的 Conditions</h2>
+<p>節點的健康狀態寫在 <code>describe node</code> 的 <strong>Conditions</strong> 區塊，逐條判讀：</p>
+<ul>
+  <li><strong>Ready</strong>＝kubelet 正常回報。False 或 Unknown 就是「節點掛了／網路斷了」。</li>
+  <li><strong>MemoryPressure／DiskPressure／PIDPressure</strong>＝節點資源告急（通常伴隨 evict Pod）。</li>
+</ul>
+<p>判讀口訣：<strong>Ready 看 kubelet；Pressure 看資源。</strong></p>
+
+<h2>控制平面：static pod</h2>
+<p>kubelet 會自動拉起 <code>/etc/kubernetes/manifests/</code> 底下的 manifest——控制平面四元件（apiserver、controller-manager、scheduler、etcd）都是這樣活的（0014／0015 都碰過）。所以「控制器不動了」的模擬方式：把 controller-manager 的 manifest 移走，kubelet 就會把它的 pod 收掉——Deployment 從此沒人管。</p>
+
+<h2>實作 A：裝回 metrics-server 並看節點健康</h2>
+
+<div class="terminal box">
+  <div class="box-title">補裝 metrics-server（0007 重播）</div>
+  <pre><span class="comment"># 1. 先確認它真的不見了（0012 重建後 kube-system 沒有 metrics-server）</span>
+<span class="prompt">kubectl get pods -n kube-system | grep metrics-server</span>
+<span class="comment">#    沒有輸出 = 沒裝</span>
+
+<span class="comment"># 2. 裝官方 components.yaml</span>
+<span class="prompt">kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml</span>
+
+<span class="comment"># 3. kind 的 kubelet 沒設 TLS 認證——補參數（只有本機測試叢集這樣做）</span>
+<span class="prompt">kubectl -n kube-system patch deployment metrics-server --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'</span>
+<span class="prompt">kubectl -n kube-system rollout status deployment/metrics-server</span>
+
+<span class="comment"># 4. 等約 30 秒收資料，驗證</span>
+<span class="prompt">kubectl top nodes</span>
+<span class="prompt">kubectl top pods -A</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">節點條件判讀</div>
+  <pre><span class="comment"># 5. Conditions 區塊：Ready=True；三種 Pressure 都 False 才是健康</span>
+<span class="prompt">kubectl describe node kind-worker</span>
+
+<span class="comment"># 6. -o wide 看節點狀態與版本</span>
+<span class="prompt">kubectl get nodes -o wide</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">static pod 巡檢</div>
+  <pre><span class="comment"># 7. kube-system 裡「沒有 -replicaset 尾碼」的 Pod 就是 static pod：
+#    etcd-kind-control-plane / kube-apiserver / kube-controller-manager / kube-scheduler</span>
+<span class="prompt">kubectl get pods -n kube-system -o wide</span>
+
+<span class="comment"># 8. 它們的 manifest 都躺在 control-plane 節點的這個目錄</span>
+<span class="prompt">docker exec kind-control-plane ls /etc/kubernetes/manifests</span></pre>
+</div>
+
+<h2>實作 B：模擬「控制器掛了」——Deployment 生不出 Pod</h2>
+
+<div class="warn box">
+  <div class="box-title">進階實驗，動手前先看</div>
+  <p>把 controller-manager 的 manifest 移走會讓它停擺約 1–2 分鐘，期間 Deployment 不會有動作——這正是「控制平面某元件掛了」的經典症狀。做完立刻放回，叢集會自行恢復。若你不想動正式叢集，可跳過此節（概念在下方照讀）。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">製造故障：controller-manager 消失</div>
+  <pre><span class="comment"># 9. 先把 controller-manager 的 manifest 移出 manifests 目錄</span>
+<span class="prompt">docker exec kind-control-plane mv /etc/kubernetes/manifests/kube-controller-manager.yaml /tmp/</span>
+
+<span class="comment"># 10. 確認它的 static pod 被 kubelet 收掉（等一下再 get）</span>
+<span class="prompt">kubectl get pods -n kube-system | grep controller-manager</span>
+<span class="comment">#    會發現那顆 pod 消失了</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">觀察症狀：Deployment 沒有 ReplicaSet、沒有 Pod</div>
+  <pre><span class="comment"># 11. 佈一支 Deployment——它「應該」要被 controller-manager 處理</span>
+<span class="prompt">kubectl create deployment ghost-cm --image=nginx:1.25 --replicas=2</span>
+<span class="prompt">kubectl get deployment ghost-cm</span>
+<span class="prompt">kubectl get rs,pods</span>
+<span class="comment">#    Deployment 存在，但 ReplicaSet 沒被建、Pod 沒出生——
+#    因為「負責生 RS 的控制器」不在。</span>
+
+<span class="comment"># 12. 診斷結論：不是 YAML 錯、不是 Pod 壞，是控制器層沒人做事</span>
+<span class="prompt">kubectl describe deployment ghost-cm</span>
+<span class="comment">#    沒有 ReplicaSet 相關事件——跟平常「立即生 RS」的表現對照就有感</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">復原：把 manifest 放回去</div>
+  <pre><span class="comment"># 13. 放回 manifest，kubelet 幾秒內重新拉起 controller-manager</span>
+<span class="prompt">docker exec kind-control-plane mv /tmp/kube-controller-manager.yaml /etc/kubernetes/manifests/</span>
+<span class="prompt">kubectl get pods -n kube-system | grep controller-manager</span>
+<span class="prompt">kubectl get pods -l app=ghost-cm</span>
+<span class="comment">#    ReplicaSet 出現、Pod 出生——控制器恢復後自動補做（reconcile）</span>
+<span class="prompt">kubectl delete deployment ghost-cm</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 11–12 步是「控制平面元件故障」的指紋：<strong>Deployment 存在但沒有對應 ReplicaSet</strong>，且 describe 看不到任何新事件。真實世界遇到這種「控制器沒做事」的症狀，方向是查 <code>kube-controller-manager</code>（logs、static pod 是否在跑），而不是去翻 Deployment YAML。</p>
+</div>
+
+<h2>實作 C：端到端故障鏈——curl 不通，從頭查到尾</h2>
+<p>把 0010（DNS 層）＋0009（endpoints 層）＋0012（NetworkPolicy）串成一次完整除錯：服務突然連不上，怎麼一步步定位？</p>
+
+<div class="terminal box">
+  <div class="box-title">準備：一支服務＋一支客戶端＋先確認通</div>
+  <pre><span class="comment"># 14. 佈服務與客戶端（跟 0010 同一招）</span>
+<span class="prompt">kubectl create deployment web --image=nginx:1.25 --replicas=2</span>
+<span class="prompt">kubectl expose deployment web --port=80</span>
+<span class="prompt">kubectl run client --image=busybox:1.36 --restart=Never -- sleep 3600</span>
+<span class="prompt">kubectl wait --for=condition=Ready pod/client --timeout=60s</span>
+
+<span class="comment"># 15. 基準線：現在是通的</span>
+<span class="prompt">kubectl exec client -- wget -qO- -T 3 http://web.default.svc.cluster.local | head -n 1</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">下故障：default namespace 全面 deny ingress</div>
+  <pre><span class="comment"># 16. 0012 的 default deny 上場——故意把 default 的所有進站流量關上</span>
+<span class="prompt">kubectl apply -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: NetworkPolicy</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: deny-all</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  podSelector: {}</span>
+<span class="prompt">  policyTypes: ["Ingress"]</span>
+<span class="prompt">EOF</span>
+<span class="prompt">kubectl get networkpolicy</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">故障鏈第一站：curl 不通</div>
+  <pre><span class="comment"># 17. 症狀出現：wget 逾時</span>
+<span class="prompt">kubectl exec client -- wget -qO- -T 3 http://web.default.svc.cluster.local || echo '-- BLOCKED --'</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">第二站：DNS 層正常嗎？（0010 的招）</div>
+  <pre><span class="comment"># 18. nslookup 解析得到 VIP——DNS 層沒問題，不是名字錯</span>
+<span class="prompt">kubectl exec client -- nslookup web.default.svc.cluster.local</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">第三站：endpoints 有後端嗎？（0009 的招）</div>
+  <pre><span class="comment"># 19. endpoints 有 2 個 IP——selector 有打到、Pod 也 Ready（0007 的 READY 也檢查一下）</span>
+<span class="prompt">kubectl get endpoints web</span>
+<span class="prompt">kubectl get pods -l app=web</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">第四站：是不是 NetworkPolicy 擋的？（0012 的招）</div>
+  <pre><span class="comment"># 20. 前面三站都正常，剩下嫌疑犯：NetworkPolicy</span>
+<span class="prompt">kubectl get networkpolicy</span>
+<span class="prompt">kubectl describe networkpolicy deny-all</span>
+<span class="comment">#    podSelector {} + Ingress = 把 default 全擋——找到了</span>
+
+<span class="comment"># 21. 移除故障源，服務恢復</span>
+<span class="prompt">kubectl delete networkpolicy deny-all</span>
+<span class="prompt">kubectl exec client -- wget -qO- -T 3 http://web.default.svc.cluster.local | head -n 1</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾</div>
+  <pre><span class="comment"># 22. 清掉練習物件（metrics-server 留著給 0020）</span>
+<span class="prompt">kubectl delete deployment web</span>
+<span class="prompt">kubectl delete svc web</span>
+<span class="prompt">kubectl delete pod client</span>
+<span class="prompt">kubectl get pods -A</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 17–21 步是 Troubleshooting 30% 的濃縮：<strong>「curl 不通」不是一個問題，是一串問題</strong>。照「DNS → endpoints → Pod READY → NetworkPolicy」逐層排除，每層都有對應的 kubectl 指令——這就是系統化除錯。Service 連不上的三大原因：selector 不合、Pod 不 Ready、NetworkPolicy 擋（0019 一課收齊）。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 節點：<code>describe node</code> 的 Conditions——Ready 查 kubelet、MemoryPressure 等查資源；NotReady 先查 kubelet 與 CNI。② 控制平面是 static pod：manifest 在 <code>/etc/kubernetes/manifests</code>；「Deployment 存在卻沒 RS」＝控制器沒做事。③ <code>kubectl top</code> 的前提是 metrics-server。④ 端到端除錯鏈：<code>curl 不通 → nslookup（DNS 層）→ get endpoints（後端層）→ get pods READY（0007）→ get networkpolicy（0012）</code>。⑤ 被 NP 擋＝逾時；被拒絕＝connection refused（通常只剩沒後端）。⑥ Service 沒 endpoints 的三原因：selector 不合、Pod 不 Ready、被 NP 擋。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你把 metrics-server 補裝回叢集，並用 <code>kubectl top</code> 驗證。</li>
+  <li>你學會判讀節點 Conditions，並找到控制平面的 static pod 與它們的 manifest。</li>
+  <li>你模擬並復原「controller-manager 掛掉」的故障，看懂 Deployment 生不出 Pod 的指紋。</li>
+  <li>你沿著 DNS → endpoints → NetworkPolicy 鏈完成一次端到端網路除錯。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">節點 Conditions 的 Ready=False，第一個該懷疑誰？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">CoreDNS</button>
+    <button class="quiz-opt">kubelet</button>
+    <button class="quiz-opt">kube-proxy</button>
+    <button class="quiz-opt">scheduler</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">「Deployment 存在但沒有 ReplicaSet」代表？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">控制器沒做事</button>
+    <button class="quiz-opt">Pod 映像壞了</button>
+    <button class="quiz-opt">selector 寫錯</button>
+    <button class="quiz-opt">資源不足</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">端到端除錯時，endpoints 有 IP、Pod 都 Ready，下一步查？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">logs</button>
+    <button class="quiz-opt">node conditions</button>
+    <button class="quiz-opt">NetworkPolicy</button>
+    <button class="quiz-opt">secret</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>除錯技能全數到位。最後一課把 20 課濃縮成一次 <strong>CKA 模擬考</strong>：10 題 60 分鐘計時實作、錯題回課對照表、考前 checklist——以及考場的「一頁濃縮小抄」。Phase 5 收工，你就具備應考水準了。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/tasks/debug/debug-cluster/">Troubleshoot Clusters（官方文件）</a> —— 本課的權威版。重點讀「Troubleshooting」總表與各元件章節，約 15 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

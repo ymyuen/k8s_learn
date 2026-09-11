@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0016 — 叢集升級與節點維護（Killercoda）</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 4 · 對應考綱：<a href="../reference/cka-domain-map.html">Cluster Architecture, Installation &amp; Configuration（25%）</a> · 需時約 35 分鐘</p>
+
+<h1>叢集升級與節點維護（Killercoda）</h1>
+
+<p>0015 把叢集建起來，本課讓它「長大＋保養」：用 <a href="../reference/glossary.html">kubeadm upgrade</a> 把小版號推上去，再用 <a href="../reference/glossary.html">cordon／drain／uncordon</a> 讓節點可以安心下線維護。升級是 CKA 的高頻實作題——順序、指令、旗標都要熟。練習一樣在 Killercoda 拋棄式 VM 上進行。</p>
+
+<div class="warn box">
+  <div class="box-title">開場：先準備一個「待升級」的叢集</div>
+  <p>沿用 0015 的 Killercoda 場景（若 VM 已重置、要照 0015 重建：先 <code>apt-cache madison kubeadm</code> 查版本，再 <code>sudo apt-get install -y kubeadm=1.34.x-1.1 kubelet=1.34.x-1.1 kubectl=1.34.x-1.1</code> <strong>把三件套釘在 1.34 後才 init</strong>——直接 init 會拿到 repo 最新版，就沒得升了）。本課假設有一台 control-plane 與一台 worker、Kubernetes 1.34.x，要升到 1.35.x。</p>
+</div>
+
+<h2>升級的核心規則</h2>
+<ul>
+  <li><strong>一次只升一個小版號</strong>（1.34 → 1.35），不能跳版（1.33 → 1.35 不行）。</li>
+  <li><strong>先 control plane、後 worker</strong>；同一個 control-plane 群也要逐台。</li>
+  <li>每台節點內部順序固定：<strong>先升 kubeadm、再套用（upgrade apply/node）、最後升 kubelet＋kubectl 並重啟 kubelet</strong>。</li>
+  <li>kubeadm 升級時預設會<strong>自動 renew 憑證</strong>（也可以用 <code>--certificate-renewal=false</code> 關掉）。</li>
+</ul>
+<p>升級工具分三層，別搞混：<code>kubeadm</code> 管「控制平面靜態元件與設定」，<code>kubelet</code> 是每台節點的執行者，<code>kubectl</code> 是客戶端——三者的版本各自獨立升級。</p>
+
+<h2>節點維護三指令</h2>
+
+<table>
+  <thead>
+    <tr><th>指令</th><th>做什麼</th><th>Pod 會怎樣</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>cordon</strong></td>
+      <td>把節點標成不可排程（SchedulingDisabled）</td>
+      <td>不再排新 Pod；已在跑的<strong>不動</strong></td>
+    </tr>
+    <tr>
+      <td><strong>drain</strong></td>
+      <td>cordon + 把上面的 Pod 驅離（evict）到別的節點</td>
+      <td>可驅離的 Pod 被安全搬家；DaemonSet 的例外</td>
+    </tr>
+    <tr>
+      <td><strong>uncordon</strong></td>
+      <td>解除不可排程標記，讓節點恢復收 Pod</td>
+      <td>之後新 Pod 又能排進來</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>實作 A：升級 control plane</h2>
+
+<div class="terminal box">
+  <div class="box-title">在 control-plane 上：先把 kubeadm 換到目標版本</div>
+  <pre><span class="comment"># 1. Ubuntu 套件管理：kubeadm/kubelet/kubectl 通常被 apt-mark hold 鎖住，先解鎖</span>
+<span class="prompt">sudo apt-mark unhold kubeadm kubelet kubectl</span>
+
+<span class="comment"># 2. 查倉庫裡有哪些可用版本（記下 1.35.x 的正確 x，下面帶入）</span>
+<span class="prompt">apt-cache madison kubeadm | head -n 10</span>
+
+<span class="comment"># 3. 升級 kubeadm（把 1.35.x 換成你查到的版號）</span>
+<span class="prompt">sudo apt-get update</span>
+<span class="prompt">sudo apt-get install -y kubeadm=1.35.x-1.1</span>
+<span class="prompt">kubeadm version</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">升級前檢查 + 套用</div>
+  <pre><span class="comment"># 4. upgrade plan：列出可升級路徑與版本差異（先看再動手）</span>
+<span class="prompt">sudo kubeadm upgrade plan</span>
+
+<span class="comment"># 5. 在「第一台」control-plane 套用升級（只在一台 cp 跑 apply）</span>
+<span class="prompt">sudo kubeadm upgrade apply v1.35.x</span>
+<span class="comment">#    它會依序更新 kube-apiserver／controller-manager／scheduler 的 static manifest，
+#    完成時印出 "Upgrade complete!"</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">升級 kubelet 與 kubectl，重啟 kubelet</div>
+  <pre><span class="comment"># 6. kubeadm 只管控制平面 manifest；節點上的 kubelet 要自己換</span>
+<span class="prompt">sudo apt-get install -y kubelet=1.35.x-1.1 kubectl=1.35.x-1.1</span>
+<span class="prompt">sudo systemctl daemon-reload</span>
+<span class="prompt">sudo systemctl restart kubelet</span>
+
+<span class="comment"># 7. 把版本鎖回去（防止下次 apt 自動動它）</span>
+<span class="prompt">sudo apt-mark hold kubeadm kubelet kubectl</span>
+
+<span class="comment"># 8. 驗收：control-plane 節點 VERSION 顯示 1.35.x</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">不熟的坑：apt 版號要帶後綴</div>
+  <p>Debian/Ubuntu 的套件版號是 <code>1.35.x-1.1</code>（後面多一段 Debian revision）。<code>apt-cache madison kubeadm</code> 印出來的那串就是正確寫法——直接複製貼上，別自己臆測。一次只升一個小版，也別把 <code>upgrade apply</code> 的目標寫成「最新」——考試題目會指定精確版號。</p>
+</div>
+
+<h2>實作 B：worker 升級（drain → 升 → uncordon）</h2>
+
+<div class="terminal box">
+  <div class="box-title">在 control-plane 上：先請 worker 把 Pod 交出來</div>
+  <pre><span class="comment"># 9. drain：cordon（不再排新的）+ 把既有 Pod 安全驅離
+#    &lt;worker-node&gt; = 你的 worker 節點名（先 get nodes 確認，Killercoda 常叫 node01）
+#    --ignore-daemonsets：DaemonSet 的 Pod 不驅離（它們本來就不該被搬走）</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl drain &lt;worker-node&gt; --ignore-daemonsets</span>
+<span class="comment">#    輸出列出被 evict 的 Pod；結束時節點標成 Ready,SchedulingDisabled</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">在 worker 上：升 kubeadm → node → kubelet</div>
+  <pre><span class="comment"># 10. worker 端的 kubeadm 升級（不必 upgrade apply——那是 cp 的事）</span>
+<span class="prompt">sudo apt-mark unhold kubeadm kubelet kubectl</span>
+<span class="prompt">sudo apt-get update</span>
+<span class="prompt">sudo apt-get install -y kubeadm=1.35.x-1.1</span>
+
+<span class="comment"># 11. kubeadm upgrade node：更新 worker 上的 kubelet 設定</span>
+<span class="prompt">sudo kubeadm upgrade node</span>
+
+<span class="comment"># 12. 換 kubelet/kubectl 並重啟 kubelet</span>
+<span class="prompt">sudo apt-get install -y kubelet=1.35.x-1.1 kubectl=1.35.x-1.1</span>
+<span class="prompt">sudo systemctl daemon-reload</span>
+<span class="prompt">sudo systemctl restart kubelet</span>
+<span class="prompt">sudo apt-mark hold kubeadm kubelet kubectl</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">回 control-plane：uncordon 放行</div>
+  <pre><span class="comment"># 13. 解除不可排程，讓 worker 恢復收 Pod</span>
+<span class="prompt">kubectl uncordon &lt;worker-node&gt;</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="comment">#    兩台都顯示 1.35.x，worker 的 STATUS 不再有 SchedulingDisabled</span>
+
+<span class="comment"># 14. 驗收：佈 3 顆 Pod 確認 worker 又能正常承接</span>
+<span class="prompt">kubectl create deployment post-upgrade --image=nginx:1.25 --replicas=3</span>
+<span class="prompt">kubectl get pods -o wide</span>
+<span class="prompt">kubectl delete deployment post-upgrade</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 9–13 步是節點維護的完整節奏：<strong>drain 把 Pod 安全搬走（cordon 只是「不再排新的」）→ 在空下來的節點上升級 → uncordon 讓它重新上工。</strong>升級 worker 期間你的服務沒有斷線——因為 Pod 早在別的節點上繼續跑。這就是 drain 存在的意義。</p>
+</div>
+
+<h2>實作 C：憑證檢查與 kubeconfig</h2>
+
+<div class="terminal box">
+  <div class="box-title">憑證到期檢查</div>
+  <pre><span class="comment"># 15. kubeadm 簽的憑證有時效；檢查還有多久到期</span>
+<span class="prompt">sudo kubeadm certs check-expiration</span>
+<span class="comment">#    表格列出各憑證的 RESIDUAL TIME（例如 apiserver 一年、admin.conf 一年）</span>
+
+<span class="comment"># 16. 快到期就手動續約（kubeadm 也會在 upgrade 時自動 renew）</span>
+<span class="prompt">sudo kubeadm certs renew all</span>
+<span class="prompt">sudo kubeadm certs check-expiration</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">kubeconfig 的角色分工</div>
+  <pre><span class="comment"># 17. /etc/kubernetes 下的 kubeconfig 各自代表一個角色</span>
+<span class="prompt">ls /etc/kubernetes/*.conf</span>
+<span class="prompt">kubectl config view</span>
+<span class="comment">#    admin.conf   → 叢集管理員（kubectl 用的那份）
+#    controller-manager.conf → controller-manager 用自己的身分連 apiserver
+#    scheduler.conf          → scheduler 的身分
+#    kubelet.conf            → 每台節點 kubelet 的身分</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾（Killercoda VM 直接關掉即可）</div>
+  <pre><span class="comment"># 18. 本課在拋棄式 VM 進行——練習完畢直接關閉場景，本機叢集不受影響</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 升級口訣：<strong>cp 先 node 後、一次一小版；每台內「kubeadm → apply/node → kubelet」。</strong> ② 指令五連：<code>apt install kubeadm=版本</code> → <code>kubeadm upgrade plan</code> → <code>kubeadm upgrade apply vX.Y.Z</code>（cp）／<code>kubeadm upgrade node</code>（worker）→ <code>apt install kubelet=版本 kubectl=版本</code> → <code>systemctl restart kubelet</code>。③ drain 必帶 <code>--ignore-daemonsets</code>；卡住時看錯誤訊息決定要不要 <code>--delete-emptydir-data</code> 或 <code>--force</code>（題目有 emptyDir Pod 時）。④ cordon 不搬家、drain 搬家、uncordon 復工。⑤ 憑證：<code>kubeadm certs check-expiration</code>／<code>renew all</code>；upgrade 預設自動 renew。⑥ kubeconfig：admin.conf 是管理員那把，<code>/etc/kubernetes/*.conf</code> 各角色一把。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你用 kubeadm upgrade plan/apply 把 control plane 升一個小版號，並升級 kubelet/kubectl。</li>
+  <li>你用 drain → 升級 → uncordon 完成 worker 的無痛升級。</li>
+  <li>你學會 cordon／drain／uncordon 的差別與旗標。</li>
+  <li>你檢查了憑證到期時間，並認識 /etc/kubernetes 各 kubeconfig 的角色。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">升級時應該先升級哪邊？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">worker</button>
+    <button class="quiz-opt">control plane</button>
+    <button class="quiz-opt">隨便</button>
+    <button class="quiz-opt">CNI</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">cordon 跟 drain 的差別是？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">cordon 不驅離 Pod</button>
+    <button class="quiz-opt">兩者相同</button>
+    <button class="quiz-opt">drain 不擋新 Pod</button>
+    <button class="quiz-opt">cordon 刪節點</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">drain 時不想驅離 DaemonSet 的 Pod 要加哪個旗標？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">--force</button>
+    <button class="quiz-opt">--delete-emptydir-data</button>
+    <button class="quiz-opt">--ignore-daemonsets</button>
+    <button class="quiz-opt">--grace-period</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>叢集會建、會升、會修。下一課回本機（Calico 叢集在 0012 之後一直沒動），把「發佈工作負載」的工具補齊：<a href="../reference/glossary.html">Helm</a>（打包好的 chart）、<a href="../reference/glossary.html">Kustomize</a>（宣告式疊加）、<a href="../reference/glossary.html">CRD</a> 與 <a href="../reference/glossary.html">Operator</a>，順便收攏 CNI/CSI/CRI 三介面。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/">Upgrading kubeadm clusters（官方文件）</a> —— 本課的權威版，照著「Upgrading control plane nodes」與「Upgrading worker nodes」兩節做一遍，約 20 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

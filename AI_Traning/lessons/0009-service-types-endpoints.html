@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0009 — Service 與 Endpoints：穩定的存取入口</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 3 · 對應考綱：<a href="../reference/cka-domain-map.html">Services &amp; Networking（20%）</a> · 需時約 25 分鐘</p>
+
+<h1>Service 與 Endpoints：穩定的存取入口</h1>
+
+<p>進入 Phase 3（Services &amp; Networking，20%）。前八課的 Pod 彼此是「各活各的」：0008 你看到 Pod 可以死、資料不會死——那「別人怎麼找到它」呢？Pod 的 IP 生生死死一直在換，總不能每次重啟就去改設定。Kubernetes 的答案是 <a href="../reference/glossary.html">Service</a>：一個<strong>不隨 Pod 變動的虛擬 IP（VIP）門口</strong>，selector 打到哪幾顆 Pod，它就把流量轉給誰。本課先建立「Service 思維」，下課再加 DNS。本課叢集沿用 0008 的雙節點。</p>
+
+<h2>Service 的組成：selector → Endpoints → 轉發</h2>
+
+<div class="terminal box">
+  <div class="box-title">Service 把流量交給活的 Pod（概念圖）</div>
+  <pre>              Service（穩定 VIP：10.96.x.x）
+                    │ selector: app=web
+                    ▼
+             Endpoints（此刻的 Pod IP 名單）
+               ├── 10.244.0.5:80
+               └── 10.244.1.7:80
+                    │ kube-proxy 在每台節點寫 iptables/IPVS 規則
+                    ▼
+            流量轉到名單上的 Pod（會輪流）</pre>
+</div>
+
+<p>Service 自己不做轉發——真正動手的是每台節點上的 <a href="../reference/glossary.html">kube-proxy</a>：它 watch Service 與 Endpoints，把「到 VIP:Port 的封包」改寫成「到某顆 Pod IP:Port」。kube-proxy 有兩種運作模式：<strong>iptables</strong>（預設，規則式）與 <strong>IPVS</strong>（核心內建的負載平衡，規則更多時效能較好）——概念知道即可，考試通常只問「誰在節點上實作 Service 規則」＝kube-proxy。</p>
+
+<h2>Service 的四種類型</h2>
+
+<table>
+  <thead>
+    <tr><th>類型</th><th>對外範圍</th><th>一句話</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>ClusterIP</strong>（預設）</td>
+      <td>叢集內</td>
+      <td>只給叢集內互相呼叫用的 VIP</td>
+    </tr>
+    <tr>
+      <td><strong>NodePort</strong></td>
+      <td>叢集外（靠節點 IP）</td>
+      <td>ClusterIP + 每台節點開一個 30000–32767 的 port 收外部流量</td>
+    </tr>
+    <tr>
+      <td><strong>LoadBalancer</strong></td>
+      <td>叢集外（雲端）</td>
+      <td>NodePort + 雲端幫你生一個對外負載平衡器（kind 沒有雲，需 MetalLB 等）</td>
+    </tr>
+    <tr>
+      <td><strong>ExternalName</strong></td>
+      <td>—</td>
+      <td>只是 DNS 的 CNAME 轉址，沒有 VIP 也沒有 selector</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="tip box">
+  <div class="box-title">VIP 的經典考點：ping 不通、curl 通</div>
+  <p>ClusterIP 是「iptables 規則做出來的假 IP」，不是某台機器上的實體網卡——所以 <code>ping &lt;VIP&gt;</code>（ICMP）一定不通，但 <code>curl http://&lt;VIP&gt;/</code>（TCP）會通。考試若有人拿「ping 不通代表 Service 壞了」來考你，答案是：<strong>ping 不通是正常的，要用 TCP 測。</strong></p>
+</div>
+
+<h2>實作 A：ClusterIP 與 Endpoints 連動</h2>
+
+<div class="terminal box">
+  <div class="box-title">佈署、暴露、看三樣東西</div>
+  <pre><span class="comment"># 1. 佈 2 顆 nginx（0002 的老朋友）</span>
+<span class="prompt">kubectl create deployment web --image=nginx:1.25 --replicas=2</span>
+<span class="prompt">kubectl rollout status deployment/web</span>
+
+<span class="comment"># 2. expose 成 Service：沒給 --type 就是 ClusterIP；--port=80 會自動抓 containerPort</span>
+<span class="prompt">kubectl expose deployment web --port=80</span>
+
+<span class="comment"># 3. 看 Service：CLUSTER-IP 就是那個「不會變的 VIP」</span>
+<span class="prompt">kubectl get svc web</span>
+
+<span class="comment"># 4. 看 Endpoints：同名的 endpoints 物件列出此刻 2 顆 Pod 的 IP</span>
+<span class="prompt">kubectl get endpoints web</span>
+<span class="prompt">kubectl get pods -o wide -l app=web</span>
+<span class="comment">#    比對：Endpoints 的 IP 就是那 2 顆 Pod 的 IP</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">從叢集內打 VIP</div>
+  <pre><span class="comment"># 5. 起一顆常駐的 busybox 當「客戶端」（0009–0010 都要用）</span>
+<span class="prompt">kubectl run client --image=busybox:1.36 --restart=Never -- sleep 3600</span>
+<span class="prompt">kubectl wait --for=condition=Ready pod/client</span>
+
+<span class="comment"># 6. 把 VIP 存進變數，用 wget 打它（回傳 nginx 的 200 歡迎頁）</span>
+<span class="prompt">VIP=$(kubectl get svc web -o jsonpath='{.spec.clusterIP}')</span>
+<span class="prompt">echo $VIP</span>
+<span class="prompt">kubectl exec client -- wget -qO- "http://$VIP/" | head -n 5</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">刪一顆 Pod，看 Endpoints 自己更新</div>
+  <pre><span class="comment"># 7. 挑一顆 Pod 刪掉，立刻重看 Endpoints</span>
+<span class="prompt">kubectl delete pod web-<span style="font-style:italic">(隨機尾碼)</span></span>
+
+<span class="comment"># 8. -w 看 Endpoints 的變化：舊 IP 消失，新 Pod Ready 後新 IP 補上</span>
+<span class="prompt">kubectl get endpoints web -w</span>
+<span class="comment">#    想親眼看交替：開兩個終端，一邊跑這行、另一邊去刪 Pod（Ctrl+C 結束）</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 4 步是「Service 的真相」：它沒有自己的後端，selector 命中幾顆 Pod，Endpoints 就列幾個 IP。第 7–8 步是整個機制的精髓——<strong>Pod 換 IP、Service 不用動</strong>，Endpoints 控制器自動把名單換新，而你的客戶端永遠只需要記住 VIP。</p>
+</div>
+
+<h2>實作 B：NodePort——把服務開到節點門口</h2>
+<p>ClusterIP 只活在叢集內；NodePort 在每台節點上開一個 30000–32767 的 port，外部（例如你的 WSL2 主機）打到「節點 IP:該 port」就能進來。真正從 host 連的示範留到 0011（那課會重建有 port mapping 的叢集），這裡先在叢集內驗證路徑通暢。</p>
+
+<div class="terminal box">
+  <div class="box-title">把 Service 升級成 NodePort</div>
+  <pre><span class="comment"># 9. 刪掉舊 ClusterIP Service，改用 NodePort 重開（乾淨示範）</span>
+<span class="prompt">kubectl delete service web</span>
+<span class="prompt">kubectl expose deployment web --type=NodePort --port=80 --name=web-np</span>
+
+<span class="comment"># 10. NODE(S) 欄：系統從 30000–32767 隨機配一個（例如 31234）</span>
+<span class="prompt">kubectl get svc web-np</span>
+
+<span class="comment"># 11. 查節點的 IP（INTERNAL-IP）</span>
+<span class="prompt">kubectl get nodes -o wide</span>
+<span class="comment">#    記下 kind-worker（或 control-plane）的 INTERNAL-IP，例如 172.18.0.3</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">在叢集內走「外部進來的路徑」</div>
+  <pre><span class="comment"># 12. 用變數組出 NodeIP:NodePort，從 client pod 打</span>
+<span class="prompt">NODEIP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')</span>
+<span class="prompt">NODEPORT=$(kubectl get svc web-np -o jsonpath='{.spec.ports[0].nodePort}')</span>
+<span class="prompt">kubectl exec client -- wget -qO- "http://$NODEIP:$NODEPORT/" | head -n 5</span>
+<span class="comment">#    回 200 就代表 NodePort 路徑通了：封包 → 節點 port → iptables → 某顆 Pod</span>
+
+<span class="comment"># 13. 驗證「哪台節點的 NodePort 都能到」：換 control-plane 的 IP 再打一次</span>
+<span class="prompt">NODEIP2=$(kubectl get nodes -o jsonpath='{.items[1].status.addresses[?(@.type=="InternalIP")].address}')</span>
+<span class="prompt">kubectl exec client -- wget -qO- "http://$NODEIP2:$NODEPORT/" | head -n 5</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 13 步的關鍵：NodePort 是「每台節點都開同一個 port、各自把流量轉進叢集」，所以<strong>不管打哪一台節點的 IP 都會通</strong>。LoadBalancer 其實就是「雲端造一台 LB，把流量送進任何一台節點的 NodePort」——你已經會 NodePort，LoadBalancer 的底層就懂了。</p>
+</div>
+
+<h2>實作 C：Headless Service——不要 VIP，直接給我 IP 名單</h2>
+<p>某些場合（資料庫主從、StatefulSet）不想經由「VIP + 隨機轉發」，想要「DNS 直接回傳每顆 Pod 的 IP」。把 Service 的 <code>clusterIP</code> 設成 <code>None</code>，就是 <a href="../reference/glossary.html">Headless Service</a>：不配 VIP、不轉發，只負責把 selector 命中清單餵給 DNS（細節下一課）。</p>
+
+<div class="terminal box">
+  <div class="box-title">建一個 headless Service</div>
+  <pre><span class="comment"># 14. expose 時帶 --cluster-ip=None</span>
+<span class="prompt">kubectl expose deployment web --type=ClusterIP --name=web-hd --port=80 --cluster-ip=None</span>
+
+<span class="comment"># 15. CLUSTER-IP 顯示 None</span>
+<span class="prompt">kubectl get svc web-hd</span>
+
+<span class="comment"># 16. Endpoints 照樣列出身後 2 顆 Pod（headless 沒有 VIP，但 selector 照常運作）</span>
+<span class="prompt">kubectl get endpoints web-hd</span>
+
+<span class="comment"># 17. 收尾：刪掉練習物件（保留 client 給下一課）</span>
+<span class="prompt">kubectl delete deployment web</span>
+<span class="prompt">kubectl delete svc web-np web-hd</span>
+<span class="prompt">kubectl get pods,svc,endpoints</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 建立：<code>kubectl expose deployment NAME --port=80 [--type=NodePort|LoadBalancer|ClusterIP]</code>；快速版 <code>kubectl create service nodeport NAME --tcp=80:80</code>。② 查後端：<code>kubectl get endpoints NAME</code>（連 Service 名稱同名的 endpoints）比對 <code>get pods -o wide</code>。③ 除錯口訣：Service 不通先查「<strong>selector 有沒有打到 Pod</strong>」——<code>get endpoints</code> 是空的就代表沒打到；再查 Pod 的 readiness（0007 的 READY 0/1）。④ NodePort 範圍 30000–32767。⑤ VIP ping 不通很正常，用 TCP 測。⑥ kube-proxy 是「在節點上實作 Service 規則」的那個人。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你會用 <code>expose</code> 建立 ClusterIP Service，並看懂「selector → Endpoints → kube-proxy」的轉發鏈。</li>
+  <li>你親眼看到刪 Pod 後 Endpoints 自動換新，Service 的 VIP 從頭到尾沒變。</li>
+  <li>你用 NodePort 走通「外部 → 節點 → Pod」的路徑，並驗證任一台節點的 port 都通。</li>
+  <li>你建立了 headless Service，看懂它「不要 VIP、只給 IP 名單」的定位。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">Service 的 selector 打到哪些 Pod，會反映在哪個物件？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">ConfigMap</button>
+    <button class="quiz-opt">Ingress</button>
+    <button class="quiz-opt">Endpoints</button>
+    <button class="quiz-opt">ReplicaSet</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">ClusterIP 的 VIP 為何 ping 不通？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">它是 iptables 規則</button>
+    <button class="quiz-opt">它被防火牆擋住</button>
+    <button class="quiz-opt">它沒有 IP</button>
+    <button class="quiz-opt">它已關閉</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">誰在每台節點上實作 Service 的轉發規則？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kubelet</button>
+    <button class="quiz-opt">kube-proxy</button>
+    <button class="quiz-opt">CoreDNS</button>
+    <button class="quiz-opt">scheduler</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Service 給你一個「不會變的 VIP」，但叢集裡的 Pod 總不能都背 IP。下一課的主角是叢集的 DNS——<a href="../reference/glossary.html">CoreDNS</a>：為什麼 Pod 只要知道 Service 的名字就找得到它（<code>web</code>、<code>web.default.svc.cluster.local</code>），以及故障時 DNS 層與 Endpoints 層怎麼分。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/concepts/services-networking/service/">Service（官方文件）</a>與<a href="https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/">EndpointSlices（官方文件）</a> —— 本課的權威版。重點讀「Publishing Services (ServiceTypes)」與「Virtual IPs and service proxies」兩節，約 15 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0007 — Probes 與 HPA：工作負載的自保與自動擴縮</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 2 · 對應考綱：<a href="../reference/cka-domain-map.html">Workloads &amp; Scheduling（15%）</a> · 需時約 30 分鐘</p>
+
+<h1>Probes 與 HPA：工作負載的自保與自動擴縮</h1>
+
+<p>0006 把設定交給了 Pod；本課讓 Pod「會照顧自己」：① <a href="../reference/glossary.html">Probe（探針）</a>讓 kubelet 檢查容器到底是「活著但病了」還是「好了可以接客」；② <a href="../reference/glossary.html">HPA</a>（HorizontalPodAutoscaler）讓 Deployment 的副本數隨 CPU 用量自動增減。兩者都是 CKA Workloads 領域的常客，而且探針寫錯造成的「READY 0/1」「CrashLoopBackOff」正是 Troubleshooting（30%）最愛出題的症狀。本課叢集沿用 0006 的雙節點，開場是乾淨的。</p>
+
+<h2>三種探針：活著、能用、等啟動</h2>
+<p>Pod 的 <code>spec.containers[].</code> 底下可以掛三種探針，kubelet 依 <code>periodSeconds</code> 週期執行、失敗超過 <code>failureThreshold</code> 次就採取動作：</p>
+
+<table>
+  <thead>
+    <tr><th>探針</th><th>在問什麼</th><th>失敗的後果</th><th>典型用途</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>livenessProbe</strong><br>（活著嗎）</td>
+      <td>容器還活著、沒卡死？</td>
+      <td><strong>殺掉容器重啟</strong></td>
+      <td>偵測死結、記憶體外洩後的無回應</td>
+    </tr>
+    <tr>
+      <td><strong>readinessProbe</strong><br>（能用嗎）</td>
+      <td>容器可以接流量嗎？</td>
+      <td>從 Service 的 Endpoints <strong>摘除</strong>（不重啟）</td>
+      <td>啟動慢、需要暖機或載入大模型的服務</td>
+    </tr>
+    <tr>
+      <td><strong>startupProbe</strong><br>（等啟動嗎）</td>
+      <td>容器啟動完成了嗎？</td>
+      <td>失敗照 <code>restartPolicy</code> 處理；成功前<strong>不跑另外兩種探針</strong></td>
+      <td>啟動要很久的容器（避免 liveness 誤殺）</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>三種探針都有三種實作：<code>exec</code>（執行指令看 exit code）、<code>httpGet</code>（HTTP GET 看 2xx/3xx）、<code>tcpSocket</code>（TCP 連得到嗎）。記住這組口訣：<strong>liveness 失敗＝重啟；readiness 失敗＝暫時別送流量來；startup 先等它長大。</strong></p>
+
+<h2>HPA：CPU 一高就加副本</h2>
+<p>HPA 是一個控制器，週期性地問 metrics API「這群 Pod 的平均 CPU 用量是多少」，除以「每顆 Pod 宣告的 <code>requests.cpu</code>」得到利用率百分比，超過 <code>targetCPUUtilizationPercentage</code>（例如 50%）就調高 Deployment 副本數。前提有二：</p>
+<ul>
+  <li>叢集裝了 <strong><a href="../reference/glossary.html">metrics-server</a></strong>（收集節點與 Pod 的用量，餵給 metrics API）——本課實作 C 會裝。</li>
+  <li>Pod 有寫 <code>resources.requests.cpu</code>——沒寫就沒分母，HPA 算不出百分比（TARGETS 顯示 <code>&lt;unknown&gt;</code>）。</li>
+</ul>
+<p>縮回來的判斷另有冷卻邏輯：連續幾輪都低於目標才縮，避免抖動（flapping）。HPA 只調整「副本數」；Pod 本身的資源不歸它管。</p>
+
+<h2>實作 A：liveness 故意失敗 → 觀察重啟</h2>
+
+<div class="terminal box">
+  <div class="box-title">liveness-demo.yaml — 30 秒後自己「裝死」</div>
+  <pre><span class="comment"># liveness-demo.yaml — 容器先摸出 /tmp/healthy，30 秒後把它刪掉</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: liveness-demo</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: busybox:1.36</span>
+<span class="prompt">    command: ["sh", "-c", "touch /tmp/healthy; sleep 30; rm -f /tmp/healthy; sleep 600"]</span>
+<span class="prompt">    livenessProbe:</span>
+<span class="prompt">      exec:</span>
+<span class="prompt">        command: ["cat", "/tmp/healthy"]</span>
+<span class="prompt">      initialDelaySeconds: 5</span>
+<span class="prompt">      periodSeconds: 5</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用、觀察、看事件</div>
+  <pre><span class="comment"># 1. 套用後先看它 Running（前 30 秒檔案還在，探針成功）</span>
+<span class="prompt">nano liveness-demo.yaml</span>
+<span class="prompt">kubectl apply -f liveness-demo.yaml</span>
+<span class="prompt">kubectl get pod liveness-demo</span>
+
+<span class="comment"># 2. -w 持續看：約 30 秒後 RESTARTS 開始往上加</span>
+<span class="prompt">kubectl get pod liveness-demo -w</span>
+<span class="comment">#    每失敗一次就重啟一次，重啟太密集會看到 CrashLoopBackOff</span>
+
+<span class="comment"># 3. describe 看事件鏈：Liveness probe failed → Killing → 重新 Created</span>
+<span class="prompt">kubectl describe pod liveness-demo</span>
+<span class="comment">#    Events 會出現 "Liveness probe failed" 與 "Container liveness-demo died"</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">修復：把裝死的那行刪掉</div>
+  <pre><span class="comment"># 4. nano 編輯：command 改回只做 sleep（拿掉 rm -f /tmp/healthy）
+#    注意：Pod 的 command／探針欄位一旦建立就「不可改」——直接刪掉重套最快</span>
+<span class="prompt">nano liveness-demo.yaml</span>
+<span class="prompt">kubectl delete pod liveness-demo</span>
+<span class="prompt">kubectl apply -f liveness-demo.yaml</span>
+
+<span class="comment"># 5. 重新建立後 RESTARTS 停在 0，不再重啟</span>
+<span class="prompt">kubectl get pod liveness-demo</span>
+
+<span class="comment"># 6. 觀察夠了，收掉</span>
+<span class="prompt">kubectl delete pod liveness-demo</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 2–3 步是「liveness 失敗 = 重啟」的現場：容器明明還在跑（process 沒退出），但 kubelet 判定它「不健康」就把整個容器砍掉重來。這就是 CrashLoopBackOff 的成因之一——不是程式 crash，是探針判它死。第 4 步的「Pod 建立後探針欄位不能改」也是考點。</p>
+</div>
+
+<h2>實作 B：readiness 打錯 port → READY 0/1</h2>
+
+<div class="terminal box">
+  <div class="box-title">readiness-demo.yaml — 探測一個沒有服務的 port</div>
+  <pre><span class="comment"># readiness-demo.yaml — nginx 只聽 80，readiness 卻去戳 8080</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: readiness-demo</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: nginx:1.25</span>
+<span class="prompt">    readinessProbe:</span>
+<span class="prompt">      httpGet:</span>
+<span class="prompt">        path: /</span>
+<span class="prompt">        port: 8080</span>
+<span class="prompt">      initialDelaySeconds: 3</span>
+<span class="prompt">      periodSeconds: 3</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用：容器活著，但 READY 0/1</div>
+  <pre><span class="comment"># 7. 套用後看：STATUS = Running，但 READY = 0/1</span>
+<span class="prompt">nano readiness-demo.yaml</span>
+<span class="prompt">kubectl apply -f readiness-demo.yaml</span>
+<span class="prompt">kubectl get pod readiness-demo</span>
+
+<span class="comment"># 8. describe 看 Events：readiness 探測 8080 失敗</span>
+<span class="prompt">kubectl describe pod readiness-demo</span>
+<span class="comment">#    "Readiness probe failed"——容器沒被殺掉，只是被標成不 Ready</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">修復：port 改回 80</div>
+  <pre><span class="comment"># 9. nano 把 8080 改成 80</span>
+<span class="prompt">nano readiness-demo.yaml</span>
+<span class="prompt">kubectl delete pod readiness-demo</span>
+<span class="prompt">kubectl apply -f readiness-demo.yaml</span>
+
+<span class="comment"># 10. READY 1/1——修好了</span>
+<span class="prompt">kubectl get pod readiness-demo</span>
+
+<span class="comment"># 11. 收掉</span>
+<span class="prompt">kubectl delete pod readiness-demo</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 7 步的 READY 0/1 是「liveness 與 readiness 分家」的最佳教材：容器沒被重啟（liveness 沒寫就預設通過），但 Service 不會把流量送給它。下課 0009 學 Service 時，這顆 READY 0/1 的 Pod 就會直接從 Endpoints 消失——現在先記住「READY 分母不滿 = 有探針失敗」。修復後 READY 立刻回到 1/1。</p>
+</div>
+
+<h2>實作 C：裝 metrics-server + HPA 現場擴縮</h2>
+<p>metrics-server 是叢集級的「用量蒐集器」，HPA 與 <code>kubectl top</code> 都靠它。先裝（本課裝好之後保留，後續課要用 <code>top</code>）：</p>
+
+<div class="terminal box">
+  <div class="box-title">安裝 metrics-server（kind 需加一個參數）</div>
+  <pre><span class="comment"># 12. 官方 manifest（latest release 的 components.yaml）</span>
+<span class="prompt">kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml</span>
+
+<span class="comment"># 13. kind 的 kubelet 沒設 TLS 認證——加 --kubelet-insecure-tls（只有本機測試叢集這樣做）</span>
+<span class="prompt">kubectl -n kube-system patch deployment metrics-server --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'</span>
+<span class="prompt">kubectl -n kube-system rollout status deployment/metrics-server</span>
+
+<span class="comment"># 14. 等約 15–30 秒讓它收第一筆資料，驗證 metrics API 有東西</span>
+<span class="prompt">kubectl top nodes</span>
+<span class="prompt">kubectl top pods -A</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">top 空轉 / HPA 沒反應，第一件事查 metrics-server</div>
+  <p>若 <code>kubectl top nodes</code> 報 <code>error: metrics not available yet</code>：等 30 秒再試；還是不行就 <code>kubectl -n kube-system logs deployment/metrics-server --tail=20</code> 看有沒有 TLS 或連線錯誤。HPA「看起來沒反應」時九成是 metrics-server 沒餵資料或 Pod 沒寫 requests——這條排查路徑考試會反覆用到。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">準備一個會喘的 Deployment</div>
+  <pre><span class="comment"># 15. 產出帶 requests 的 Deployment（HPA 需要分母）</span>
+<span class="prompt">kubectl create deployment hpa-demo --image=nginx:1.25 --replicas=1 --dry-run=client -o yaml &gt; hpa-demo.yaml</span>
+<span class="prompt">nano hpa-demo.yaml</span>
+<span class="comment">#    spec.template.spec.containers[0] 加：
+#      resources:
+#        requests:
+#          cpu: 100m</span>
+<span class="prompt">kubectl apply -f hpa-demo.yaml</span>
+<span class="prompt">kubectl rollout status deployment/hpa-demo</span>
+
+<span class="comment"># 16. 建 Service（HPA 不需要，但等一下壓力來源要靠它）</span>
+<span class="prompt">kubectl expose deployment hpa-demo --port=80</span>
+
+<span class="comment"># 17. 下 autoscale 指令：平均 CPU 超過 50% 就加副本，最多 5 顆</span>
+<span class="prompt">kubectl autoscale deployment hpa-demo --cpu-percent=50 --min=1 --max=5</span>
+
+<span class="comment"># 18. 看 HPA：現在沒流量，TARGETS 顯示 &lt;unknown&gt; 或很低的百分比</span>
+<span class="prompt">kubectl get hpa</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">施加壓力，看它長胖</div>
+  <pre><span class="comment"># 19. 開「第二個」WSL2 終端，跑 2–3 個無限迴圈同時打 hpa-demo 的 Service
+#     （單一 load-gen 對靜態 nginx 頁的壓力可能不夠，多開幾個比較保險）</span>
+<span class="prompt">kubectl run load-gen --image=busybox:1.36 --restart=Never -- sh -c 'while true; do wget -q -O- http://hpa-demo &gt; /dev/null; done'</span>
+<span class="prompt">kubectl run load-gen2 --image=busybox:1.36 --restart=Never -- sh -c 'while true; do wget -q -O- http://hpa-demo &gt; /dev/null; done'</span>
+
+<span class="comment"># 20. 先確認用量真的有上去（TARGETS 有數字、top 看得到 CPU 在爬）</span>
+<span class="prompt">kubectl top pods -l app=hpa-demo</span>
+
+<span class="comment"># 21. 回第一個終端，盯著 HPA 與 Pod——約 1–2 分鐘後 REPLICAS 往上爬</span>
+<span class="prompt">kubectl get hpa -w</span>
+<span class="prompt">kubectl get pods -l app=hpa-demo -w</span>
+<span class="comment">#    TARGETS 超過 50%，副本數 1 → 2 → 3 …（每次調整間隔約 15–30 秒）</span>
+
+<span class="comment"># 22. 觀察夠了，到第二個終端停掉壓力來源</span>
+<span class="prompt">kubectl delete pod load-gen load-gen2</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收縮、收尾</div>
+  <pre><span class="comment"># 23. 回第一個終端：壓力停掉後不會立刻縮——HPA 要連續幾輪低於目標才縮</span>
+<span class="prompt">kubectl get hpa -w</span>
+<span class="prompt">kubectl get pods -l app=hpa-demo -w</span>
+<span class="comment">#    幾分鐘後副本數會慢慢回到 1（冷卻避免抖動）</span>
+
+<span class="comment"># 24. 不等它縮完也行，直接收尾</span>
+<span class="prompt">kubectl delete deployment hpa-demo</span>
+<span class="prompt">kubectl delete service hpa-demo</span>
+<span class="prompt">kubectl delete horizontalpodautoscaler hpa-demo</span>
+<span class="prompt">rm hpa-demo.yaml</span>
+
+<span class="comment"># 25. 課末確認：叢集乾淨、metrics-server 保留在 kube-system</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pods -n kube-system</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 20–22 步是 HPA 的完整生命週期：先確認 <code>top</code> 有數字（壓力真的吃到 CPU）→ TARGETS 超過 50% → Deployment 的 replicas 被調高 → 新的 Pod 陸續 Ready。第 23 步的「不立刻縮」是縮放遲滯（cooldown）：HPA 用最近幾輪的平均值決策，避免流量一抖就狂縮狂放。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 三探針口訣：<strong>liveness 失敗＝重啟；readiness 失敗＝摘流量；startup 先等啟動。</strong> ② 症狀判讀：READY 0/N → readiness 探針失敗；RESTARTS 上升 → liveness 失敗或程式真的 crash；「啟動很久被反覆殺掉」→ 加 startupProbe。③ HPA 三前提：metrics-server 有資料、Pod 有 requests、target 設對——出問題依序查。④ 指令：<code>kubectl autoscale deployment NAME --cpu-percent=50 --min=1 --max=5</code>、<code>kubectl get hpa</code>。⑤ 修探針：Pod 建立後探針欄位不可改，刪掉重套。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你親眼看到 liveness 失敗觸發容器重啟（RESTARTS 上升），並修好它。</li>
+  <li>你看到 readiness 失敗造成 READY 0/1（容器活著但不接流量），並修好它。</li>
+  <li>你在 kind 裝好 metrics-server，並用 <code>kubectl top</code> 驗證 metrics API。</li>
+  <li>你用 <code>kubectl autoscale</code> 完成一次真實的 CPU 驅動擴縮：加壓長到多顆、停壓慢慢縮回。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">readinessProbe 連續失敗會怎樣？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">重啟容器</button>
+    <button class="quiz-opt">從 Endpoints 摘除</button>
+    <button class="quiz-opt">刪除 Pod</button>
+    <button class="quiz-opt">擴增副本</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">HPA 判斷 CPU 利用率的分母是什麼？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">requests.cpu</button>
+    <button class="quiz-opt">limits.cpu</button>
+    <button class="quiz-opt">節點核心數</button>
+    <button class="quiz-opt">副本數量</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">啟動很慢的容器一直被 liveness 誤殺，該加哪種探針？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">readiness</button>
+    <button class="quiz-opt">liveness</button>
+    <button class="quiz-opt">startup</button>
+    <button class="quiz-opt">tcpSocket</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Pod 會活、會接流量、會自己長胖，但「活的 Pod」總要把資料放哪？本課處理完計算與自保，下一課進入 Storage（10%）：PV／PVC／StorageClass 三層——把「檔案」從「會死的容器」手上交給叢集管理。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/">Container Probes（官方文件）</a>與<a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/">Horizontal Pod Autoscaling（官方文件）</a> —— 本課的權威版。Probes 那篇的對照表值得逐列讀一遍，約 20 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

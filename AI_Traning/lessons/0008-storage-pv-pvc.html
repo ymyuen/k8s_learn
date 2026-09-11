@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0008 — 儲存三層：PV、PVC 與 StorageClass</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 2 · 對應考綱：<a href="../reference/cka-domain-map.html">Storage（10%）</a> · 需時約 25 分鐘</p>
+
+<h1>儲存三層：PV、PVC 與 StorageClass</h1>
+
+<p>前面七課，你的 Pod 都是「無狀態的」——容器一重啟，寫在容器檔案系統裡的東西就沒了。本課把 Phase 2 收尾在資料面：Kubernetes 的儲存抽象。<a href="../reference/glossary.html">PV</a>（PersistentVolume，實際的磁碟）、<a href="../reference/glossary.html">PVC</a>（PersistentVolumeClaim，你要的磁碟）、<a href="../reference/glossary.html">StorageClass</a>（造磁碟的工廠）三層分工，讓「容器會死」與「資料要活」並存。Storage 佔考綱 10%，但 PV/PVC 是 Troubleshooting 常見情境的底層原因。本課叢集沿用 0007：雙節點、metrics-server 在位。</p>
+
+<h2>三層分工：誰擁有、誰使用、誰製造</h2>
+
+<table>
+  <thead>
+    <tr><th>層級</th><th>是什麼</th><th>比喻</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>PV</strong><br>PersistentVolume</td>
+      <td>實際的儲存空間（NFS、雲端磁碟、hostPath…），叢集資源、不屬於任何 namespace</td>
+      <td>倉庫裡「已經買好」的一格貨架</td>
+    </tr>
+    <tr>
+      <td><strong>PVC</strong><br>PersistentVolumeClaim</td>
+      <td>「我要 1Gi、可讀寫一次」的請求單；有 namespace。K8s 幫你找一個符合的 PV 綁起來</td>
+      <td>你填的「我要一格」申請表</td>
+    </tr>
+    <tr>
+      <td><strong>StorageClass</strong><br>（儲存類別）</td>
+      <td>「動態供應」的工廠：PVC 一來，就照參數幫你現做一個 PV</td>
+      <td>依訂單現產貨架的廠商</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Pod 永遠只認識 PVC（<code>persistentVolumeClaim.claimName</code>），不直接碰 PV——分界線很清楚：<strong>開發者寫 PVC，管理者管 PV，StorageClass 自動補貨。</strong></p>
+
+<h2>存取模式與回收策略</h2>
+
+<table>
+  <thead>
+    <tr><th>存取模式</th><th>縮寫</th><th>意義</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ReadWriteOnce</td><td><strong>RWO</strong></td><td>單一節點可讀寫（最常見；多 Pod 同節點可共用）</td></tr>
+    <tr><td>ReadOnlyMany</td><td><strong>ROX</strong></td><td>多節點唯讀</td></tr>
+    <tr><td>ReadWriteMany</td><td><strong>RWX</strong></td><td>多節點可讀寫（NFS 等共享儲存才支援）</td></tr>
+  </tbody>
+</table>
+
+<p>PV 被釋放後怎麼處理，由 <code>persistentVolumeReclaimPolicy</code> 決定：<strong>Retain</strong>（保留磁碟，PV 變 Released、等人清）與 <strong>Delete</strong>（連底層儲存一起刪掉，雲端磁碟的常見設定）。口訣：<strong>Delete 是「PVC 一刪，PV 連本帶利還給雲」；Retain 是「磁碟留下，系統管理員自己收拾」。</strong></p>
+
+<div class="terminal box">
+  <div class="box-title">把「儲存檔案」的一生畫一遍</div>
+  <pre>PVC（我要 1Gi）───&gt; StorageClass 工廠（dynamic provisioning）
+                        │ 現做一個底層磁碟
+                        ▼
+                   PV 綁給 PVC（Bound）
+                        │ Pod 透過 PVC 掛載使用
+                        ▼
+                PVC 刪除 ──&gt; 依 ReclaimPolicy：
+                            Delete → PV 一起消失
+                            Retain → PV 變成 Released 等人接手</pre>
+</div>
+
+<h2>實作 A：動態供應——PVC 一張單，PV 自動來</h2>
+<p>kind 預設內建一個 StorageClass（local-path provisioner 提供，類別名叫 <code>standard</code>），所以「動態供應」開箱即用。</p>
+
+<div class="terminal box">
+  <div class="box-title">看看 kind 的 StorageClass</div>
+  <pre><span class="comment"># 1. 內建 SC：PROVISIONER 是 rancher.io/local-path，RECLAIMPOLICY 是 Delete</span>
+<span class="prompt">kubectl get storageclass</span>
+<span class="comment">#    standard（default）是 WaitForFirstConsumer——第一次有 Pod 要用才真正綁 PV</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">pvc.yaml — 一張「我要 1Gi」的申請單</div>
+  <pre><span class="comment"># pvc.yaml — 不指定 storageClassName，就會用 default 的 standard 動態供應</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: PersistentVolumeClaim</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: my-pvc</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  accessModes: ["ReadWriteOnce"]</span>
+<span class="prompt">  resources:</span>
+<span class="prompt">    requests:</span>
+<span class="prompt">      storage: 1Gi</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用：PVC 先「掛單」</div>
+  <pre><span class="comment"># 2. 套用申請單</span>
+<span class="prompt">nano pvc.yaml</span>
+<span class="prompt">kubectl apply -f pvc.yaml</span>
+
+<span class="comment"># 3. 看 PVC：Pending——standard 是 WaitForFirstConsumer，還沒人用就不供給</span>
+<span class="prompt">kubectl get pvc</span>
+
+<span class="comment"># 4. PV 也還沒有——動態供應要等「第一個使用者」出現才開工</span>
+<span class="prompt">kubectl get pv</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">disk-demo.yaml — Pod 把 PVC 掛進 /data</div>
+  <pre><span class="comment"># disk-demo.yaml — 啟動時寫一筆資料進 PVC，然後睡著</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: disk-demo</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: busybox:1.36</span>
+<span class="prompt">    command: ["sh", "-c", "echo hello-from-pvc &gt; /data/message.txt; sleep 3600"]</span>
+<span class="prompt">    volumeMounts:</span>
+<span class="prompt">    - name: data</span>
+<span class="prompt">      mountPath: /data</span>
+<span class="prompt">  volumes:</span>
+<span class="prompt">  - name: data</span>
+<span class="prompt">    persistentVolumeClaim:</span>
+<span class="prompt">      claimName: my-pvc</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">布 Pod 觸發供給：PVC 綁定、PV 現身</div>
+  <pre><span class="comment"># 5. 套用 Pod，等它 Running——Pod 被排到節點的那一瞬間，SC 才開始「現做」PV</span>
+<span class="prompt">nano disk-demo.yaml</span>
+<span class="prompt">kubectl apply -f disk-demo.yaml</span>
+<span class="prompt">kubectl get pod disk-demo</span>
+
+<span class="comment"># 6. 回頭看：PVC 變 Bound，PV 也自動出現（名字像 pvc-xxxxxxxxxx）</span>
+<span class="prompt">kubectl get pvc</span>
+<span class="prompt">kubectl get pv</span>
+
+<span class="comment"># 7. describe PVC 看綁到哪顆 PV；再讀回寫入的檔案</span>
+<span class="prompt">kubectl describe pvc my-pvc</span>
+<span class="prompt">kubectl exec disk-demo -- cat /data/message.txt</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 3–6 步是「三層」同時亮相的時刻：PVC 先 <strong>Pending</strong>（WaitForFirstConsumer），直到第一個使用者（disk-demo Pod）排上節點，StorageClass 才幫你現做一顆 PV、PVC 轉 <strong>Bound</strong>。第 7 步寫入的檔案已經躺在 PV 的底層磁碟上——下一節證明「容器死了它還活著」。</p>
+</div>
+
+<h2>實作 B：容器會死，資料要活</h2>
+
+<div class="terminal box">
+  <div class="box-title">刪 Pod、重建、資料還在</div>
+  <pre><span class="comment"># 8. 把 Pod 整個刪掉（容器檔案系統跟著消失——但 /data 不在裡面）</span>
+<span class="prompt">kubectl delete pod disk-demo</span>
+
+<span class="comment"># 9. 用同一份 YAML 重建一顆全新的 Pod</span>
+<span class="prompt">kubectl apply -f disk-demo.yaml</span>
+<span class="prompt">kubectl get pod disk-demo</span>
+
+<span class="comment"># 10. 新容器讀得到舊資料——寫進 PV 的東西跟著 PVC 走，不跟著容器</span>
+<span class="prompt">kubectl exec disk-demo -- cat /data/message.txt</span>
+
+<span class="comment"># 11. 到節點上親眼看「檔案實際放在哪」：先讀 local-path 的設定，再對照實際目錄</span>
+<span class="prompt">kubectl -n kube-system get cm local-path-config -o yaml | grep -A4 nodePathMap</span>
+<span class="prompt">docker exec kind-worker ls /var/local-path-provisioner</span>
+<span class="comment">#     找不到就試 /opt/local-path-provisioner（版本不同路徑不同）；
+#     若那顆 PV 是綁在 control-plane 那一端，把 kind-worker 換成 kind-control-plane
+#     PV 的實際名稱就是上面 kubectl get pv 看到的 pvc-xxxx</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">刪 PVC：看 Delete 回收策略動手</div>
+  <pre><span class="comment"># 12. 先刪 Pod（PVC 還在使用中時不能刪）</span>
+<span class="prompt">kubectl delete pod disk-demo</span>
+
+<span class="comment"># 13. 刪 PVC——standard 的回收策略是 Delete</span>
+<span class="prompt">kubectl delete pvc my-pvc</span>
+
+<span class="comment"># 14. PV 跟著消失：底層磁碟也被回收（get pv 應該空了）</span>
+<span class="prompt">kubectl get pv</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 10 步是全課最關鍵的一幕：<strong>Pod 可以死、資料不會死</strong>——因為資料在 PV，Pod 只是暫時借用。第 13–14 步則是 StorageClass 回收策略的現場：Delete 的意思就是「PVC 刪掉時，連同自動產生的 PV 與底層目錄一起清掉」。</p>
+</div>
+
+<h2>實作 C：靜態供應——管理者預先造好 PV</h2>
+<p>動態供應是「工廠現做」；靜態供應是「倉庫現貨」——系統管理員先手刻一顆 PV（這顆我們用 <code>hostPath</code>，直接吃節點的目錄，最適合本機學習；實務上會是 NFS／雲端磁碟）。關鍵：PVC 要寫 <code>storageClassName: ""</code>，關掉動態供應，它才會去配「現貨」。</p>
+
+<div class="terminal box">
+  <div class="box-title">pv-static.yaml — 管理者預先造好的 PV</div>
+  <pre><span class="comment"># pv-static.yaml — hostPath 吃 kind-worker 節點的 /mnt/data；nodeAffinity 釘住節點</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: PersistentVolume</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: pv-static</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  capacity:</span>
+<span class="prompt">    storage: 1Gi</span>
+<span class="prompt">  accessModes: ["ReadWriteOnce"]</span>
+<span class="prompt">  persistentVolumeReclaimPolicy: Retain</span>
+<span class="prompt">  storageClassName: ""</span>
+<span class="prompt">  hostPath:</span>
+<span class="prompt">    path: /mnt/data</span>
+<span class="prompt">    type: DirectoryOrCreate</span>
+<span class="prompt">  nodeAffinity:</span>
+<span class="prompt">    required:</span>
+<span class="prompt">      nodeSelectorTerms:</span>
+<span class="prompt">      - matchExpressions:</span>
+<span class="prompt">        - key: kubernetes.io/hostname</span>
+<span class="prompt">          operator: In</span>
+<span class="prompt">          values: ["kind-worker"]</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用 PV、再用 PVC 認領</div>
+  <pre><span class="comment"># 15. 套用後 PV 停在 Available，等有人來認領</span>
+<span class="prompt">nano pv-static.yaml</span>
+<span class="prompt">kubectl apply -f pv-static.yaml</span>
+<span class="prompt">kubectl get pv</span>
+
+<span class="comment"># 16. 一張「只要現貨」的申請單：storageClassName 設空字串、關閉動態供應</span>
+<span class="prompt">kubectl create -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: PersistentVolumeClaim</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: pvc-static</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  accessModes: ["ReadWriteOnce"]</span>
+<span class="prompt">  storageClassName: ""</span>
+<span class="prompt">  resources:</span>
+<span class="prompt">    requests:</span>
+<span class="prompt">      storage: 1Gi</span>
+<span class="prompt">EOF</span>
+
+<span class="comment"># 17. pvc-static 綁上 pv-static（兩邊狀態都變 Bound）</span>
+<span class="prompt">kubectl get pvc</span>
+<span class="prompt">kubectl get pv</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">用這顆「現貨」PVC 寫資料</div>
+  <pre><span class="comment"># 18. 換個 Pod 掛 pvc-static（claimName 改成 pvc-static），寫一筆再讀回</span>
+<span class="prompt">kubectl delete pod disk-demo 2&gt;/dev/null; true</span>
+<span class="prompt">kubectl run static-demo --image=busybox:1.36 --restart=Never --dry-run=client -o yaml &gt; static-demo.yaml</span>
+<span class="prompt">nano static-demo.yaml</span>
+<span class="comment">#    把 spec 加上 volumeMounts/volumes，claimName 用 pvc-static（照 disk-demo.yaml 抄）</span>
+<span class="prompt">kubectl apply -f static-demo.yaml</span>
+<span class="prompt">kubectl exec static-demo -- sh -c 'echo static-works &gt; /data/note.txt; cat /data/note.txt'</span>
+
+<span class="comment"># 19. 收尾：刪 Pod → 刪 PVC（Retain：PV 不會被刪，只變 Released）</span>
+<span class="prompt">kubectl delete pod static-demo</span>
+<span class="prompt">kubectl delete pvc pvc-static</span>
+<span class="prompt">kubectl get pv</span>
+<span class="comment">#    pv-static 還在，但 STATUS 變成 Released——等著管理者清理（這個示範直接刪）</span>
+
+<span class="comment"># 20. 手動刪掉 Released 的 PV，收乾淨</span>
+<span class="prompt">kubectl delete pv pv-static</span>
+<span class="prompt">rm pvc.yaml disk-demo.yaml pv-static.yaml static-demo.yaml</span>
+
+<span class="comment"># 21. 課末確認：雙節點、乾淨、無殘留 PV/PVC</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pv,pvc</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 19 步對照第 13 步，回收策略的差別一目了然：<strong>Delete</strong> 讓 PV 自動消失；<strong>Retain</strong> 讓 PV 留在原地、標成 <code>Released</code>——這是「PVC 刪了但 PV 還在」的標準情境，考場問「為什麼 PV 還在？」答案就是 reclaim policy 是 Retain。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 三層口訣：<strong>PVC 是請求、PV 是現貨、StorageClass 是工廠</strong>；Pod 只認 PVC。② 查詢三寶：<code>kubectl get pvc</code>／<code>get pv</code>／<code>get storageclass</code>。③ 存取模式縮寫：RWO（單節點讀寫）、ROX（多節點唯讀）、RWX（多節點讀寫）。④ 回收策略：Delete 連根拔、Retain 留 Released。⑤ 想配靜態 PV：PVC 寫 <code>storageClassName: ""</code>；hostPath PV 一定要 nodeAffinity 釘節點。⑥ 動態綁定常見的 WaitForFirstConsumer：PVC 先 Pending、有 Pod 用才 Bound——不是故障。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你見證了動態供應：只寫 PVC，StorageClass 自動現做 PV 並綁定。</li>
+  <li>你證明「Pod 會死、資料會活」：刪掉 Pod 重建後檔案還在。</li>
+  <li>你親眼看 Delete 回收（PV 跟 PVC 一起消失）與 Retain 回收（PV 變 Released）的差別。</li>
+  <li>你手刻了一顆靜態 hostPath PV，並用 <code>storageClassName: ""</code> 的 PVC 精準認領它。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">Pod 的 volume 來源應該寫哪個？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">PV 名稱</button>
+    <button class="quiz-opt">StorageClass</button>
+    <button class="quiz-opt">PVC 名稱</button>
+    <button class="quiz-opt">節點路徑</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">ReclaimPolicy 是 Retain 的 PV，PVC 刪除後 PV 會？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">變 Released 保留</button>
+    <button class="quiz-opt">自動被刪除</button>
+    <button class="quiz-opt">立刻被複用</button>
+    <button class="quiz-opt">轉成 PVC</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">RWX 代表什麼？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">單節點讀寫</button>
+    <button class="quiz-opt">多節點讀寫</button>
+    <button class="quiz-opt">多節點唯讀</button>
+    <button class="quiz-opt">單節點唯讀</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Phase 2 結束。Pod 有資源、有設定、會自保、資料也活得下來——但它們彼此怎麼找到對方？下一課開始 Phase 3（Services &amp; Networking，20%）：<strong>Service</strong>。Pod 的 IP 會生會滅，Service 提供一個「不會變的門口」，還把流量轉給活的 Pod。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/">Persistent Volumes（官方文件）</a>與<a href="https://kubernetes.io/docs/concepts/storage/storage-classes/">Storage Classes（官方文件）</a> —— 本課的權威版。重點讀「Volume 與 Claim 的生命週期」與「Dynamic Provisioning」兩節，約 15 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

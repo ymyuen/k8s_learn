@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0020 — CKA 模擬考與衝刺策略</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 5 · 對應考綱：<a href="../reference/cka-domain-map.html">Troubleshooting（30%）＋全領域</a> · 需時約 60 分鐘</p>
+
+<h1>CKA 模擬考與衝刺策略</h1>
+
+<p>課程的最後一課：一場 60 分鐘、10 題的<strong>計時模擬考</strong>，涵蓋 0002–0019 的全部重點。考完對答案、錯題回課、再讀「一頁濃縮小抄」——之後你就有本事在真實考試（2 小時、可查官方文件、<a href="../reference/glossary.html">Killer.sh</a> 17 題模擬）裡拿到好成績。報名流程不在本課範圍（MISSION 明訂 out of scope），我們練的是「應考能力」。</p>
+
+<div class="warn box">
+  <div class="box-title">模擬考規則（先讀再開始）</div>
+  <p>① 計時 <strong>60 分鐘</strong>，10 題，每題約 6 分鐘。② 全程在 WSL2 bash、本機 Calico 叢集操作（第 8 題備份檔放 ~/practice）。③ 可查官方文件，但<strong>不能暫停查課文</strong>——先寫完再對答案。④ 每題下面附「驗收指令」，自己判斷過不過。⑤ 另開一個 <code>~/practice/mock-notes.txt</code> 記「哪題卡住、卡在哪」。</p>
+</div>
+
+<h2>實作 A：10 題計時模擬考</h2>
+
+<div class="terminal box">
+  <div class="box-title">題 1（0002 複習）Deployment 更新與回滾</div>
+  <pre><span class="comment"># 1. 需求：建 deployment web（nginx:1.25、3 副本）；更新成 nginx:1.26 並確認 rollout 成功；再回滾到上一版。</span>
+<span class="prompt">kubectl create deployment web --image=nginx:1.25 --replicas=3</span>
+<span class="prompt">kubectl set image deployment/web web=nginx:1.26</span>
+<span class="prompt">kubectl rollout status deployment/web</span>
+<span class="prompt">kubectl rollout undo deployment/web</span>
+<span class="comment">#    驗收：kubectl rollout history deployment/web 有 ≥3 個 REVISION；get pods 3 顆 Running</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 2（0009 複習）把服務開成 NodePort</div>
+  <pre><span class="comment"># 2. 需求：把題 1 的 deployment/web 暴露成 NodePort Service（port 80），確認 Endpoints 有 3 個 IP。</span>
+<span class="prompt">kubectl expose deployment web --type=NodePort --port=80 --name=web-np</span>
+<span class="comment">#    驗收：kubectl get svc web-np（TYPE=NodePort）；kubectl get endpoints web-np 有 3 個 IP</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 3（0004 複習）Job 與 CronJob</div>
+  <pre><span class="comment"># 3. 需求：a) 用 kubectl create job 建一支跑完即結束的 Job（busybox 印 hello）；b) 建立每 2 分鐘跑一次的 CronJob。</span>
+<span class="prompt">kubectl create job hello-job --image=busybox:1.36 -- echo hello-cka</span>
+<span class="prompt">kubectl create cronjob every-2min --image=busybox:1.36 --schedule="*/2 * * * *" -- date</span>
+<span class="comment">#    驗收：a) get jobs → COMPLETIONS 1/1，kubectl logs job/hello-job 有 hello-cka
+#          b) get cronjob 看到 SCHEDULE；等 2 分鐘 get jobs 出現 every-2min-xxx</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 4（0006 複習）ConfigMap 與 Secret 注入</div>
+  <pre><span class="comment"># 4. 需求：a) configmap app-env（APP_ENV=staging）；b) secret db-secret（DB_PASSWORD=secret123）；
+#            c) 一顆 pod 把兩者都掛成環境變數並印出。</span>
+<span class="prompt">kubectl create configmap app-env --from-literal=APP_ENV=staging</span>
+<span class="prompt">kubectl create secret generic db-secret --from-literal=DB_PASSWORD=secret123</span>
+<span class="prompt">kubectl run env-check --image=busybox:1.36 --restart=Never --dry-run=client -o yaml -- sleep 3600 &gt; env-check.yaml</span>
+<span class="comment">#    nano 手動加：envFrom.configMapRef（app-env）＋ env.valueFrom.secretKeyRef（DB_PASSWORD）</span>
+<span class="prompt">kubectl apply -f env-check.yaml</span>
+<span class="comment">#    驗收：kubectl exec env-check -- sh -c 'echo $APP_ENV $DB_PASSWORD' → staging secret123</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 5（0013 複習）RBAC</div>
+  <pre><span class="comment"># 5. 需求：namespace team-a 建 SA deployer；授權它在 team-a 內對 deployments 能
+#           get/list/create/update；用 auth can-i 驗證 get=yes、delete=no、kube-system 的 get=no。</span>
+<span class="prompt">kubectl create ns team-a</span>
+<span class="prompt">kubectl -n team-a create serviceaccount deployer</span>
+<span class="prompt">kubectl -n team-a create role deployer-role --verb=get,list,create,update --resource=deployments</span>
+<span class="prompt">kubectl -n team-a create rolebinding deployer-bind --role=deployer-role --serviceaccount=team-a:deployer</span>
+<span class="comment">#    驗收：三行 auth can-i（--as=system:serviceaccount:team-a:deployer）</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 6（0012 複習）NetworkPolicy</div>
+  <pre><span class="comment"># 6. 需求：namespace app 內三顆 pod（app=a、app=b、app=x），app=b 跑 nginx。
+#           NetworkPolicy：只准 app=a 連到 app=b 的 80，其餘全擋。
+#           先建資源，再下 default-deny＋精準放行（0012 兩招）。</span>
+<span class="prompt">kubectl create ns app</span>
+<span class="prompt">kubectl -n app run app-b --image=nginx:1.25 --labels=app=b --restart=Never --port=80</span>
+<span class="prompt">kubectl -n app expose pod app-b --port=80</span>
+<span class="prompt">kubectl -n app run app-a --image=busybox:1.36 --labels=app=a --restart=Never -- sleep 3600</span>
+<span class="prompt">kubectl -n app run app-x --image=busybox:1.36 --labels=app=x --restart=Never -- sleep 3600</span>
+<span class="prompt">kubectl apply -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: NetworkPolicy</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: allow-a-to-b</span>
+<span class="prompt">  namespace: app</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  podSelector:</span>
+<span class="prompt">    matchLabels:</span>
+<span class="prompt">      app: b</span>
+<span class="prompt">  policyTypes: ["Ingress"]</span>
+<span class="prompt">  ingress:</span>
+<span class="prompt">  - from:</span>
+<span class="prompt">    - podSelector:</span>
+<span class="prompt">        matchLabels:</span>
+<span class="prompt">          app: a</span>
+<span class="prompt">    ports:</span>
+<span class="prompt">    - protocol: TCP</span>
+<span class="prompt">      port: 80</span>
+<span class="prompt">EOF</span>
+<span class="comment">#    驗收：exec app-a 連 http://app-b 通；exec app-x 連 http://app-b 逾時</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 7（0008 複習）靜態 PV + PVC</div>
+  <pre><span class="comment"># 7. 需求：hostPath PV（kind-worker 的 /mnt/mock、1Gi、Retain、storageClassName ""）
+#           + 同名的 PVC 綁定成功；掛進 pod 後能寫檔。</span>
+<span class="prompt">docker exec kind-worker mkdir -p /mnt/mock</span>
+<span class="prompt">kubectl apply -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: PersistentVolume</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: pv-mock</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  capacity: {storage: 1Gi}</span>
+<span class="prompt">  accessModes: ["ReadWriteOnce"]</span>
+<span class="prompt">  persistentVolumeReclaimPolicy: Retain</span>
+<span class="prompt">  storageClassName: ""</span>
+<span class="prompt">  hostPath: {path: /mnt/mock, type: DirectoryOrCreate}</span>
+<span class="prompt">  nodeAffinity:</span>
+<span class="prompt">    required:</span>
+<span class="prompt">      nodeSelectorTerms:</span>
+<span class="prompt">      - matchExpressions:</span>
+<span class="prompt">        - key: kubernetes.io/hostname</span>
+<span class="prompt">          operator: In</span>
+<span class="prompt">          values: ["kind-worker"]</span>
+<span class="prompt">EOF</span>
+<span class="prompt">kubectl apply -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: PersistentVolumeClaim</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: pvc-mock</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  accessModes: ["ReadWriteOnce"]</span>
+<span class="prompt">  storageClassName: ""</span>
+<span class="prompt">  resources: {requests: {storage: 1Gi}}</span>
+<span class="prompt">EOF</span>
+<span class="prompt">kubectl run pv-pod --image=busybox:1.36 --restart=Never --dry-run=client -o yaml -- sleep 3600 &gt; pv-pod.yaml</span>
+<span class="comment">#    nano 手動加 volume/volumeMount（claimName: pvc-mock，mountPath: /data）</span>
+<span class="prompt">kubectl apply -f pv-pod.yaml</span>
+<span class="comment">#    驗收：get pvc → Bound；exec pv-pod 能寫能讀 /data/mock.txt</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 8（0014 複習）etcd snapshot</div>
+  <pre><span class="comment"># 8. 需求：對本機 etcd 存 snapshot 到 /var/lib/etcd/etcd-mock.db、拷回 host，並用 snapshot status 驗證。</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- sh -c 'ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key snapshot save /var/lib/etcd/etcd-mock.db'</span>
+<span class="prompt">docker cp kind-control-plane:/var/lib/etcd/etcd-mock.db ~/practice/etcd-mock.db</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- sh -c 'ETCDCTL_API=3 etcdctl snapshot status /var/lib/etcd/etcd-mock.db --write-out=table'</span>
+<span class="comment">#    驗收：status table 有 HASH/REVISION/TOTAL KEYS；host 上 ls -lh 看得到檔案</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 9（0016 複習）節點維護</div>
+  <pre><span class="comment"># 9. 需求：把 kind-worker cordon，確認不可排程後再 uncordon 恢復。</span>
+<span class="prompt">kubectl cordon kind-worker</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl uncordon kind-worker</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="comment">#    驗收：cordon 後 STATUS 出現 SchedulingDisabled；uncordon 後消失</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 10（0011 複習）Ingress 資源</div>
+  <pre><span class="comment"># 10. 需求：寫一份 Ingress（ingressClassName: nginx）把 /demo 導到題 2 的 web-np:80。
+#          本機 Calico 叢集沒有 ingress 控制器，本題練「寫對資源」——
+#          apply 成功＋describe 無 schema 錯誤即算過（ADDRESS 留空屬預期）。</span>
+<span class="prompt">kubectl apply -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: Ingress</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: mock-ingress</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  ingressClassName: nginx</span>
+<span class="prompt">  rules:</span>
+<span class="prompt">  - http:</span>
+<span class="prompt">      paths:</span>
+<span class="prompt">      - path: /demo</span>
+<span class="prompt">        pathType: Prefix</span>
+<span class="prompt">        backend:</span>
+<span class="prompt">          service:</span>
+<span class="prompt">            name: web-np</span>
+<span class="prompt">            port:</span>
+<span class="prompt">              number: 80</span>
+<span class="prompt">EOF</span>
+<span class="comment">#    驗收：kubectl get ingress mock-ingress 顯示規則；describe 無 error</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">模擬考收尾：清場＋計分</div>
+  <pre><span class="comment"># 11. 計時到，先別偷看課文——對照下方「錯題回課對照表」自己打勾。清場指令：</span>
+<span class="prompt">kubectl delete deployment web</span>
+<span class="prompt">kubectl delete svc web-np</span>
+<span class="prompt">kubectl delete job hello-job</span>
+<span class="prompt">kubectl delete cronjob every-2min</span>
+<span class="prompt">kubectl delete cm app-env</span>
+<span class="prompt">kubectl delete secret db-secret</span>
+<span class="prompt">kubectl delete pod env-check</span>
+<span class="prompt">kubectl delete ns team-a app</span>
+<span class="prompt">kubectl delete pvc pvc-mock pv pv-mock</span>
+<span class="prompt">kubectl delete pod pv-pod</span>
+<span class="prompt">kubectl delete ingress mock-ingress</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- rm -f /var/lib/etcd/etcd-mock.db</span>
+<span class="prompt">rm -f env-check.yaml pv-pod.yaml</span>
+<span class="prompt">kubectl get pods -A</span></pre>
+</div>
+
+<h2>實作 B：錯題回課對照表</h2>
+<table>
+  <thead>
+    <tr><th>卡住的主題</th><th>回哪課補</th><th>重點動作</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>rollout／回滾</td><td>0002</td><td>set image → rollout status → undo</td></tr>
+    <tr><td>Job／CronJob 旗標</td><td>0004</td><td>dry-run 產 YAML 加 completions</td></tr>
+    <tr><td>requests／QoS</td><td>0005</td><td>describe node 看 Allocated resources</td></tr>
+    <tr><td>ConfigMap／Secret 注入</td><td>0006</td><td>envFrom／valueFrom／volume 三路</td></tr>
+    <tr><td>探針／HPA</td><td>0007</td><td>READY 0/N 判讀；autoscale 前提</td></tr>
+    <tr><td>PV／PVC／StorageClass</td><td>0008</td><td>storageClassName "" 接靜態 PV</td></tr>
+    <tr><td>Service／Endpoints</td><td>0009</td><td>expose；get endpoints 對照</td></tr>
+    <tr><td>DNS 分層</td><td>0010</td><td>nslookup 全名、NXDOMAIN</td></tr>
+    <tr><td>Ingress 三件套</td><td>0011</td><td>ingressClassName → controller</td></tr>
+    <tr><td>NetworkPolicy</td><td>0012</td><td>default deny 兩模板；egress+DNS</td></tr>
+    <tr><td>RBAC 四物件</td><td>0013</td><td>auth can-i --as=system:serviceaccount:…</td></tr>
+    <tr><td>etcd snapshot</td><td>0014</td><td>三憑證模板；save/status/restore</td></tr>
+    <tr><td>kubeadm init/join</td><td>0015</td><td>token create --print-join-command</td></tr>
+    <tr><td>升級／drain</td><td>0016</td><td>cp 先 node 後；--ignore-daemonsets</td></tr>
+    <tr><td>Helm／kustomize</td><td>0017</td><td>helm rollback；kubectl apply -k</td></tr>
+    <tr><td>Pod 除錯</td><td>0018</td><td>logs --previous；Exit Code 137</td></tr>
+    <tr><td>節點／控制平面</td><td>0019</td><td>describe node Conditions；static pod</td></tr>
+  </tbody>
+</table>
+
+<h2>實作 C：考前 checklist（考前三天逐項打勾）</h2>
+<ul>
+  <li><strong>文件書籤</strong>：把官方文件加進書籤並練過「在考試介面怎麼開」——kubectl Cheat Sheet、Deployment、Service、NetworkPolicy、PV、RBAC、etcd、kubeadm。真實考試可查官方文件，<strong>知道去哪找比背下來更省時</strong>。</li>
+  <li><strong>別名與環境</strong>：<code>alias k=kubectl</code>、<code>export do="--dry-run=client -o yaml"</code>、<code>complete -F __start_kubectl k</code>（bash completion）——考場第一分鐘先設好。</li>
+  <li><strong>加速反射</strong>：dry-run 產 YAML 再改（0004 起練到爛）、<code>-o wide</code>、<code>kubectl explain</code> 補欄位記憶。</li>
+  <li><strong>時間策略</strong>：先掃全部題目，先做有把握的；單題卡超過 5 分鐘就跳，最後再回來。</li>
+  <li><strong>Killer.sh</strong>：購考附 2 次（各 36 小時），考前一至二週各做一次，錯題回到上面的對照表。</li>
+</ul>
+
+<h2>一頁濃縮小抄（考前十分鐘看這張）</h2>
+
+<div class="terminal box">
+  <div class="box-title">全 20 課濃縮</div>
+  <pre><span class="comment"># 四控制器口訣（0004）：</span>
+Deployment 補數量、DaemonSet 補節點、Job 補失敗、CronJob 補時間
+
+<span class="comment"># Workloads（0005–0007）：</span>
+requests 排程／limits 執行；QoS：全等=Guaranteed、全沒=BestEffort
+taint 打節點、toleration 寫 Pod，效果 NoSchedule／PreferNoSchedule／NoExecute
+liveness 失敗=重啟、readiness 失敗=摘流量；HPA 前提=metrics-server+requests
+
+<span class="comment"># Config &amp; Storage（0006、0008）：</span>
+Secret base64 ≠ 加密；volume 掛載約 1 分鐘內同步、env 不更新
+PVC 是請求、PV 是現貨、StorageClass 是工廠；RWO/ROX/RWX
+
+<span class="comment"># Networking（0009–0012）：</span>
+Service：selector→Endpoints→kube-proxy；NodePort 30000–32767
+FQDN = svc.ns.svc.cluster.local；DNS 有回應 ≠ 後端可用
+Ingress＝規則／IngressClass＝指名／Controller＝執行者
+NetworkPolicy：規則出現即預設拒絕；podSelector{}＝全選；egress 別忘 DNS
+
+<span class="comment"># 叢集管理（0013–0017）：</span>
+RBAC：Role×RoleBinding=ns、ClusterRole×RoleBinding=限回 ns、
+      ClusterRole×ClusterRoleBinding=全叢集；auth can-i 萬用
+etcd：save→status→restore 三模板；路徑 /etc/kubernetes/manifests、/var/lib/etcd
+升級：cp 先 node 後、一次一小版；drain --ignore-daemonsets；cordon 不搬家
+Helm 管套件、Kustomize 管差異；CRD 先於 CR 於 controller
+
+<span class="comment"># 除錯（0018–0019）：</span>
+get → describe → logs(→--previous) → exec
+Exit 137 = OOM；CrashLoop 看 --previous；Pending 看 Events
+Service 不通：DNS→endpoints→READY→NetworkPolicy 四站檢查</pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄（最後一張）</div>
+  <p>① 時間是最大敵人：先易後難、不纏鬥、題目要求「apply」就 apply、「看狀態」就別多做。② 指令忘參數：<code>kubectl create ... --help</code> 與 <code>kubectl explain pod.spec.containers</code> 是合法的官方查詢。③ 每題做完全用題目給的驗證方式確認一次（get／describe／logs）。④ 別動 kube-system 的既有元件，除非題目明說。⑤ 作答都在題目指定的 namespace 裡，別開新 namespace 亂放。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你完成一場 10 題、60 分鐘的計時模擬考，並用驗收指令自我評分。</li>
+  <li>你有一張「錯題→回課」對照表，知道弱點該回哪一課。</li>
+  <li>你有一份考前 checklist 與全 20 課濃縮小抄。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">CKA 時間策略的第一原則是？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">從最後一題開始</button>
+    <button class="quiz-opt">先易後難</button>
+    <button class="quiz-opt">每題寫滿</button>
+    <button class="quiz-opt">只做難題</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">考試中忘了 YAML 欄位，哪個指令最適合查？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kubectl explain</button>
+    <button class="quiz-opt">kubectl top</button>
+    <button class="quiz-opt">kubectl drain</button>
+    <button class="quiz-opt">kubectl cordon</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">考前衝刺的官方模擬考環境是？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kind</button>
+    <button class="quiz-opt">minikube</button>
+    <button class="quiz-opt">Killer.sh</button>
+    <button class="quiz-opt">Killercoda</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>二十課到此完成——從「什麼是 Pod」到「整叢集除錯」。往後保持練習節奏：每 1–2 週把濃縮小抄上的主題輪流實作一遍，考前兩週進 Killer.sh。報名流程已超出本課程範圍（見 <a href="../MISSION.md">MISSION</a>）；當你把模擬考練到穩定通過，就是報名的時候了。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://training.linuxfoundation.org/certification/certified-kubernetes-administrator-cka/">CKA | Linux Foundation（官方認證頁）</a>與<a href="https://killer.sh/cka">Killer.sh CKA Simulator</a> —— 考試形式、時程與模擬環境以官方為準，RESOURCES 亦有收錄。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

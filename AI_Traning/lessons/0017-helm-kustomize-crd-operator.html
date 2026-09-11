@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0017 — Helm、Kustomize、CRD 與 Operator</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 4 · 對應考綱：<a href="../reference/cka-domain-map.html">Cluster Architecture, Installation &amp; Configuration（25%）</a> · 需時約 35 分鐘</p>
+
+<h1>Helm、Kustomize、CRD 與 Operator</h1>
+
+<p>0015／0016 在 Killercoda 玩 kubeadm；本課回本機的 Calico 叢集（0012 之後一直留著）。主題是「怎麼把一整套應用交給叢集」：<a href="../reference/glossary.html">Helm</a>（打包好的安裝包）、<a href="../reference/glossary.html">Kustomize</a>（不用模板的宣告式疊加）、<a href="../reference/glossary.html">CRD</a>／<a href="../reference/glossary.html">Custom Resource</a>／<a href="../reference/glossary.html">Operator</a>（讓叢集認識你自訂的物件）。最後把 CNI／CSI／CRI 三個介面收攏，Phase 4 就圓滿了。</p>
+
+<h2>三種「交付 YAML」的方式</h2>
+
+<table>
+  <thead>
+    <tr><th></th><th>Helm</th><th>Kustomize</th><th>原生 YAML＋kubectl</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>本質</strong></td>
+      <td>套件管理員（chart＝模板＋values）</td>
+      <td>宣告式「基底＋疊加」</td>
+      <td>一份份寫死的檔案</td>
+    </tr>
+    <tr>
+      <td><strong>換環境</strong></td>
+      <td><code>--set</code> 或換 values 檔</td>
+      <td>換 overlay 目錄</td>
+      <td>複製一份改（最容易出錯）</td>
+    </tr>
+    <tr>
+      <td><strong>回滾／卸載</strong></td>
+      <td><code>helm rollback</code>／<code>uninstall</code></td>
+      <td>沒有 release 概念（靠 kubectl）</td>
+      <td>沒有（自己刪）</td>
+    </tr>
+    <tr>
+      <td><strong>適合</strong></td>
+      <td>安裝大型第三方套件（資料庫、監控）</td>
+      <td>自己維護的一組 YAML 要分環境</td>
+      <td>極簡、單一物件練習</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>一句話：<strong>Helm 管「套件與版本」，Kustomize 管「同一份 YAML 的環境差異」。</strong></p>
+
+<h2>實作 A：Helm 安裝一套 nginx</h2>
+
+<div class="terminal box">
+  <div class="box-title">在 WSL2 安裝 helm（官方安裝腳本，一次性）</div>
+  <pre><span class="comment"># 1. 先確認叢集還在（0012–0014 的 Calico 雙節點；若不在，用 0012 的 kind-calico.yaml 重建）</span>
+<span class="prompt">kubectl get nodes</span>
+
+<span class="comment"># 2. 下載並執行官方安裝腳本（get-helm-3）</span>
+<span class="prompt">curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3</span>
+<span class="prompt">chmod 700 get_helm.sh</span>
+<span class="prompt">./get_helm.sh</span>
+<span class="prompt">helm version</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">加 repo、搜尋、安裝</div>
+  <pre><span class="comment"># 3. 加入 Bitnami 的 chart repo（Helm 的「軟體來源」）
+#    Bitnami 現在也提供 OCI registry（oci://registry-1.docker.io/bitnamicharts），
+#    本課用傳統 repo 教學；兩者指令語法略有不同</span>
+<span class="prompt">helm repo add bitnami https://charts.bitnami.com/bitnami</span>
+<span class="prompt">helm repo update</span>
+
+<span class="comment"># 4. 搜尋 repo 裡的 chart；-l 列出全部版本，挑一個「釘版」安裝（--version）</span>
+<span class="prompt">helm search repo bitnami/nginx --versions | head -n 5</span>
+<span class="prompt">helm search repo bitnami/nginx</span>
+
+<span class="comment"># 5. 安裝：release 名叫 myweb，chart 是 bitnami/nginx
+#    （chart 會展開成 Deployment/Service/…一整組 YAML 送進叢集）
+#    進版控的團隊會釘 chart 版本：helm install myweb bitnami/nginx --version &lt;上一步看到的版號&gt;</span>
+<span class="prompt">helm install myweb bitnami/nginx</span>
+<span class="prompt">helm list</span>
+
+<span class="comment"># 6. 用 helm 的 label 看它到底建了哪些東西</span>
+<span class="prompt">kubectl get all -l app.kubernetes.io/instance=myweb</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">--set 覆寫、升級、回滾、卸載</div>
+  <pre><span class="comment"># 7. 用 --set 覆寫 chart 的預設值（每個 chart 的 keys 以 helm show values 輸出為準）</span>
+<span class="prompt">helm show values bitnami/nginx | grep -A4 -i 'replicaCount\|service:'</span>
+<span class="prompt">helm upgrade myweb bitnami/nginx --set replicaCount=3</span>
+<span class="prompt">kubectl get pods -l app.kubernetes.io/instance=myweb</span>
+<span class="comment">#    副本從 1 變 3</span>
+
+<span class="comment"># 8. 看 release 的版本歷史</span>
+<span class="prompt">helm history myweb</span>
+
+<span class="comment"># 9. 回滾到第一個版本（revision 1）——Helm 版的 rollout undo</span>
+<span class="prompt">helm rollback myweb 1</span>
+<span class="prompt">kubectl get pods -l app.kubernetes.io/instance=myweb</span>
+
+<span class="comment"># 10. 卸載：把 chart 建出來的東西一次清光</span>
+<span class="prompt">helm uninstall myweb</span>
+<span class="prompt">helm list</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>Helm 的核心價值在第 10 步：<strong>一次卸載，全部清掉</strong>——所有由 chart 建立的物件都帶 <code>app.kubernetes.io/instance=myweb</code>，helm 依此回收。若某個 chart 的 <code>--set</code> 鍵名與這裡不同，<code>helm show values bitnami/nginx</code> 會印出完整的可設定清單——照它為準。</p>
+</div>
+
+<h2>實作 B：Kustomize——基底與疊加</h2>
+
+<div class="terminal box">
+  <div class="box-title">建立 base（基底）</div>
+  <pre><span class="comment"># 11. 用 0004 的 dry-run 工作法產出 Deployment 與 Service，放進 kustom/base/</span>
+<span class="prompt">mkdir -p kustom/base kustom/overlays/prod</span>
+<span class="prompt">kubectl create deployment kustom-demo --image=nginx:1.25 --replicas=1 --dry-run=client -o yaml &gt; kustom/base/deployment.yaml</span>
+<span class="prompt">kubectl create service clusterip kustom-demo --tcp=80:80 --dry-run=client -o yaml &gt; kustom/base/service.yaml</span>
+
+<span class="comment"># 12. base 的 kustomization.yaml：宣告「基底包含哪些檔」</span>
+<span class="prompt">nano kustom/base/kustomization.yaml</span>
+<span class="comment"># 內容：
+# apiVersion: kustomize.config.k8s.io/v1beta1
+# kind: Kustomization
+# resources:
+# - deployment.yaml
+# - service.yaml</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">預覽並套用 base</div>
+  <pre><span class="comment"># 13. kubectl kustomize 直接印出合併後的完整 YAML（kustomize 的「dry-run」）</span>
+<span class="prompt">kubectl kustomize kustom/base | head -n 30</span>
+
+<span class="comment"># 14. -k 就是「apply 這個 kustomization」</span>
+<span class="prompt">kubectl apply -k kustom/base</span>
+<span class="prompt">kubectl get deploy,svc kustom-demo</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">prod overlay：只疊加「副本數變 3」</div>
+  <pre><span class="comment"># 15. overlay 的 kustomization.yaml：resources 指向 ../../base，再疊 patches</span>
+<span class="prompt">nano kustom/overlays/prod/kustomization.yaml</span>
+<span class="comment"># 內容：
+# apiVersion: kustomize.config.k8s.io/v1beta1
+# kind: Kustomization
+# resources:
+# - ../../base
+# replicas:
+# - name: kustom-demo
+#   count: 3</span>
+
+<span class="comment"># 16. 預覽 prod 版：只有 replicas 那行被改成 3</span>
+<span class="prompt">kubectl kustomize kustom/overlays/prod | grep -E 'name:|replicas:'</span>
+<span class="prompt">kubectl apply -k kustom/overlays/prod</span>
+<span class="prompt">kubectl get deploy kustom-demo</span>
+<span class="comment">#    DESIRED 變成 3——基底沒動，prod 疊加生效</span>
+
+<span class="comment"># 17. 收尾</span>
+<span class="prompt">kubectl delete -k kustom/overlays/prod</span>
+<span class="prompt">rm -rf kustom</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>Kustomize 不寫模板、不改原檔：<strong>base 是一份「乾淨版」，overlay 只描述「差異」</strong>。第 16 步的 <code>kubectl kustomize</code> 是它的殺手鐧——先看合併結果再套用。CKA 愛考 <code>-k</code>（kustomization）與 <code>-f</code>（單一/多份 YAML）的分別。</p>
+</div>
+
+<h2>實作 C：CRD、Custom Resource 與 Operator</h2>
+<p>Kubernetes 的 API 可以「長出新品種」：用 <a href="../reference/glossary.html">CRD</a>（CustomResourceDefinition）定義一個新的資源型別，之後 <code>kubectl apply</code> 那種型別的物件——<a href="../reference/glossary.html">Custom Resource（自訂資源）</a>。但注意：<strong>CR 被存進 etcd 之後，沒有 controller 的話它就只是「一筆資料」</strong>，不會有人照它的 spec 去建 Deployment。<a href="../reference/glossary.html">Operator</a> 就是「會看某種 CR、把它變成實際資源」的控制器（0002 學的控制器模式，延伸到自訂資源）。</p>
+
+<div class="terminal box">
+  <div class="box-title">crd-widgets.yaml — 定義「Widget」型別</div>
+  <pre><span class="comment"># crd-widgets.yaml — 宣告新資源型別：group example.com，kind Widget</span>
+<span class="prompt">apiVersion: apiextensions.k8s.io/v1</span>
+<span class="prompt">kind: CustomResourceDefinition</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: widgets.example.com</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  group: example.com</span>
+<span class="prompt">  names:</span>
+<span class="prompt">    kind: Widget</span>
+<span class="prompt">    listKind: WidgetList</span>
+<span class="prompt">    plural: widgets</span>
+<span class="prompt">    singular: widget</span>
+<span class="prompt">  scope: Namespaced</span>
+<span class="prompt">  versions:</span>
+<span class="prompt">  - name: v1</span>
+<span class="prompt">    served: true</span>
+<span class="prompt">    storage: true</span>
+<span class="prompt">    schema:</span>
+<span class="prompt">      openAPIV3Schema:</span>
+<span class="prompt">        type: object</span>
+<span class="prompt">        properties:</span>
+<span class="prompt">          spec:</span>
+<span class="prompt">            type: object</span>
+<span class="prompt">            properties:</span>
+<span class="prompt">              replicas:</span>
+<span class="prompt">                type: integer</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用 CRD，認識新資源</div>
+  <pre><span class="comment"># 18. 套用 CRD</span>
+<span class="prompt">nano crd-widgets.yaml</span>
+<span class="prompt">kubectl apply -f crd-widgets.yaml</span>
+<span class="prompt">kubectl get crd widgets.example.com</span>
+
+<span class="comment"># 19. 從這一刻起，kubectl 認得 widgets 這個資源</span>
+<span class="prompt">kubectl api-resources | grep widgets</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">cr-widget.yaml — 建一個 Widget 實例</div>
+  <pre><span class="comment"># cr-widget.yaml — apiVersion = &lt;group&gt;/&lt;version&gt;，kind = Widget</span>
+<span class="prompt">apiVersion: example.com/v1</span>
+<span class="prompt">kind: Widget</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: my-widget</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  replicas: 3</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用、查詢、刪除</div>
+  <pre><span class="comment"># 20. 套用 CR——apiserver 接受、存進 etcd</span>
+<span class="prompt">nano cr-widget.yaml</span>
+<span class="prompt">kubectl apply -f cr-widget.yaml</span>
+<span class="prompt">kubectl get widgets</span>
+<span class="prompt">kubectl get widget my-widget -o yaml</span>
+<span class="comment">#    注意：沒有任何 Pod 被建出來——因為沒有 controller 在看 Widget</span>
+
+<span class="comment"># 21. 收尾：刪 CR 與 CRD</span>
+<span class="prompt">kubectl delete -f cr-widget.yaml</span>
+<span class="prompt">kubectl delete -f crd-widgets.yaml</span>
+<span class="prompt">rm -f crd-widgets.yaml cr-widget.yaml get_helm.sh</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 20 步是理解 Operator 的鑰匙：<strong>CR 只是資料，Controller 才是行為</strong>。真實世界的 Operator（如 prometheus-operator）會 watch「Prometheus 型 CR」，再幫你建出 Deployment、Service、RBAC 一整組。你等於在寫「自己的控制器」的邊界——把 CRD＋CR 這段練熟，就懂 Operator 在幹嘛了。</p>
+</div>
+
+<h2>三個介面收攏：CNI、CSI、CRI</h2>
+<p>Kubernetes 用三個「標準介面」外掛底層實作，一路走來你都碰過：</p>
+<table>
+  <thead>
+    <tr><th>介面</th><th>管什麼</th><th>本課程遇到的實作</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>CNI</strong></td><td>Pod 網路（IP 與連通性）</td><td>kindnet（0012 前）、Calico（0012 起）</td></tr>
+    <tr><td><strong>CSI</strong></td><td>儲存（掛載磁碟）</td><td>kind 內建 local-path（0008）</td></tr>
+    <tr><td><strong>CRI</strong></td><td>容器執行時期</td><td>containerd（kind／kubeadm 都用它）</td></tr>
+  </tbody>
+</table>
+<p>口訣：<strong>CNI 管網、CSI 管存、CRI 管跑。</strong></p>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① Helm：<code>repo add</code> → <code>install</code> → <code>upgrade --set</code> → <code>history</code>／<code>rollback</code> → <code>uninstall</code>；release 是「一次安裝」的單位。② <code>-k</code> 吃 kustomization 目錄、<code>-f</code> 吃 YAML 檔；<code>kubectl kustomize 目錄</code> 可預覽。③ CRD 三步順序：<strong>先 apply CRD → 再 apply CR → 最後（若有的話）controller 才反應</strong>。④ CR 的 apiVersion 是「group/version」（example.com/v1），不是固定那幾個。⑤ 沒 controller 的 CR 只是一筆資料。⑥ 三介面口訣：CNI 網、CSI 存、CRI 跑。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你在 WSL2 裝好 Helm，完成 install／--set 升級／rollback／uninstall 一整圈。</li>
+  <li>你用 Kustomize 的 base＋overlay 達成「基底不動、prod 疊加」，並用 <code>-k</code> 套用。</li>
+  <li>你寫出極簡 CRD 與 CR，親眼看到「沒有 controller 的 CR 只是資料」。</li>
+  <li>你把 CNI／CSI／CRI 三介面收進同一張表。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">Helm 的一次安裝稱為什麼？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">chart</button>
+    <button class="quiz-opt">release</button>
+    <button class="quiz-opt">repo</button>
+    <button class="quiz-opt">values</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">kubectl 套用 kustomization 目錄用的是哪個旗標？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">-k</button>
+    <button class="quiz-opt">-f</button>
+    <button class="quiz-opt">-l</button>
+    <button class="quiz-opt">-n</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">apply 了 CRD 與 CR 之後，為何沒有 Pod 跑起來？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">CRD 寫錯</button>
+    <button class="quiz-opt">CR 沒被儲存</button>
+    <button class="quiz-opt">沒有 controller</button>
+    <button class="quiz-opt">apiVersion 錯</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Phase 4 完成，你已經「會管叢集」。最後一段（Phase 5，Troubleshooting 30%）把 0001–0017 累積的除錯片段串成系統：下一課從 <a href="../reference/glossary.html">CrashLoopBackOff</a> 這類「Pod 層」症狀開始，辦一場五顆壞 Pod 的診斷賽。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://helm.sh/docs/">Helm 官方文件</a>與<a href="https://kubectl.docs.kubernetes.io/">Kustomize（kubectl 版文件）</a>與<a href="https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/">Extend the Kubernetes API with CustomResourceDefinitions（官方文件）</a> —— Helm 讀「Using Helm」、CRD 讀前兩節即可，約 20 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

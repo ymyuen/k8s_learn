@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CKA 考綱領域地圖 — 課程參考</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<h1>CKA 考綱領域地圖</h1>
+<p class="meta">資料來源：<a href="https://github.com/cncf/curriculum/blob/master/CKA_Curriculum_v1.35.pdf">CNCF CKA Curriculum v1.35</a>（官方 PDF）與 <a href="https://training.linuxfoundation.org/certification/certified-kubernetes-administrator-cka/">LF 認證頁</a>，查核日期 2026-08。考試為 2 小時線上實作，Kubernetes v1.35。本頁同時兼作課程目錄（20 課）。</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>考綱領域（官方權重）</th>
+      <th>核心能力</th>
+      <th>本課程對應</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Cluster Architecture, Installation &amp; Configuration</strong><br>（25%）</td>
+      <td>RBAC；kubeadm 建置/升級叢集；叢集生命週期；HA 控制平面；Helm &amp; Kustomize；擴充介面（CNI/CSI/CRI）；CRD 與 Operator</td>
+      <td><strong>0001</strong>（架構基礎）<br><strong>0013–0017</strong>（RBAC／etcd／kubeadm／升級／Helm 等）<br>＋ 0019（控制平面除錯）、0020（全領域模擬）</td>
+    </tr>
+    <tr>
+      <td><strong>Workloads &amp; Scheduling</strong><br>（15%）</td>
+      <td>Rolling update 與 rollback；ConfigMap/Secret 設定；工作負載自動擴縮；自我修復部署的 primitive；Pod 准入與排程（limits、node affinity…）</td>
+      <td><strong>0002–0007</strong>（Deployment 至 Probes/HPA）<br>＋ 0018（Pod 除錯）</td>
+    </tr>
+    <tr>
+      <td><strong>Services &amp; Networking</strong><br>（20%）</td>
+      <td>Pod 間連通性；NetworkPolicy；ClusterIP/NodePort/LoadBalancer 與 endpoints；Gateway API；Ingress 控制器與資源；CoreDNS</td>
+      <td><strong>0009–0012</strong>（Service 至 NetworkPolicy/CNI）<br>＋ 0019（網路除錯鏈）</td>
+    </tr>
+    <tr>
+      <td><strong>Storage</strong><br>（10%）</td>
+      <td>StorageClass 與動態供應；Volume 類型、存取模式、回收策略；PV/PVC 管理</td>
+      <td><strong>0008</strong>（儲存三層 PV/PVC/StorageClass）</td>
+    </tr>
+    <tr>
+      <td><strong>Troubleshooting</strong><br>（30%）</td>
+      <td>叢集與節點除錯；叢集元件除錯；監控資源使用量；管理與評估容器輸出串流；服務與網路除錯</td>
+      <td><strong>0018–0020</strong>（Pod／叢集／模擬考）<br>＋ 每課實作都順帶累積（Phase 0–4 各課的「該觀察到什麼」與考場小抄）</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="tip box">
+  <div class="box-title">備考洞察</div>
+  <p>Troubleshooting 高達 30%，是最大單一領域。課程把「系統化除錯」滲透到每一課的終端機實作中（0003 孤兒診斷、0007 探針、0010 DNS 分層、0018–0019 收束），而不是留到最後才學。架構與安裝（25%）是第二重頭，集中在 0013–0017。</p>
+</div>
+
+<h2>課程 Phase 對照</h2>
+<table>
+  <thead>
+    <tr><th>Phase</th><th>主題</th><th>課程</th><th>對應考綱領域</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Phase 0</td><td>基礎與叢集架構：控制平面 vs 節點、kind 環境、kubectl 初探、第一個 Pod</td><td>0001</td><td>Cluster Architecture、Workloads</td></tr>
+    <tr><td>Phase 1</td><td>工作負載與排程：Deployment（rollout/rollback）、Labels/Selectors、DaemonSet、Job/CronJob、資源與排程（requests/limits、taints、affinity）</td><td>0002–0005</td><td>Workloads &amp; Scheduling</td></tr>
+    <tr><td>Phase 2</td><td>配置與儲存：ConfigMap、Secret、Probes、HPA、PV/PVC/StorageClass</td><td>0006–0008</td><td>Workloads、Storage</td></tr>
+    <tr><td>Phase 3</td><td>服務與網路：Service、CoreDNS、Ingress、NetworkPolicy、CNI 概念</td><td>0009–0012</td><td>Services &amp; Networking</td></tr>
+    <tr><td>Phase 4</td><td>叢集管理：RBAC、etcd 備份還原、kubeadm 建置/升級、節點維護、Helm/Kustomize/CRD/Operator</td><td>0013–0017</td><td>Cluster Architecture（25% 主體）</td></tr>
+    <tr><td>Phase 5</td><td>故障排除與應考衝刺：Pod／叢集系統化除錯、計時模擬考、Killer.sh 指引</td><td>0018–0020</td><td>Troubleshooting（30%）+ 全領域</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2>學習地圖（課程目錄：20 課）</h2>
+
+<h3>Phase 0 基礎與叢集架構</h3>
+<ul>
+  <li><a href="../lessons/0001-cluster-architecture-first-pod.html">Lesson 0001 — 叢集架構與第一個 Pod</a></li>
+</ul>
+
+<h3>Phase 1 工作負載與排程</h3>
+<ul>
+  <li><a href="../lessons/0002-deployment-self-healing-rollout.html">Lesson 0002 — Deployment、自我修復與 Rollout/Rollback</a></li>
+  <li><a href="../lessons/0003-labels-selectors.html">Lesson 0003 — Labels &amp; Selectors 深入</a></li>
+  <li><a href="../lessons/0004-daemonset-job.html">Lesson 0004 — DaemonSet 與 Job（Deployment 做不到的場景）</a></li>
+  <li><a href="../lessons/0005-resources-scheduling.html">Lesson 0005 — 資源與排程：requests/limits、Taints 與 Affinity</a></li>
+</ul>
+
+<h3>Phase 2 配置與儲存</h3>
+<ul>
+  <li><a href="../lessons/0006-configmap-secret.html">Lesson 0006 — ConfigMap 與 Secret：把設定從映像抽出來</a></li>
+  <li><a href="../lessons/0007-probes-hpa.html">Lesson 0007 — Probes 與 HPA：工作負載的自保與自動擴縮</a></li>
+  <li><a href="../lessons/0008-storage-pv-pvc.html">Lesson 0008 — 儲存三層：PV、PVC 與 StorageClass</a></li>
+</ul>
+
+<h3>Phase 3 服務與網路</h3>
+<ul>
+  <li><a href="../lessons/0009-service-types-endpoints.html">Lesson 0009 — Service 與 Endpoints：穩定的存取入口</a></li>
+  <li><a href="../lessons/0010-coredns-service-discovery.html">Lesson 0010 — CoreDNS 與服務發現</a></li>
+  <li><a href="../lessons/0011-ingress-gateway-api.html">Lesson 0011 — Ingress 與 Gateway API：L7 路由</a></li>
+  <li><a href="../lessons/0012-networkpolicy-cni.html">Lesson 0012 — NetworkPolicy 與 CNI：叢集內防火牆</a></li>
+</ul>
+
+<h3>Phase 4 叢集管理</h3>
+<ul>
+  <li><a href="../lessons/0013-rbac-serviceaccount.html">Lesson 0013 — RBAC 與 ServiceAccount：誰能做什麼</a></li>
+  <li><a href="../lessons/0014-etcd-backup-restore.html">Lesson 0014 — etcd 備份與還原</a></li>
+  <li><a href="../lessons/0015-kubeadm-cluster-setup.html">Lesson 0015 — kubeadm 叢集建置（Killercoda）</a></li>
+  <li><a href="../lessons/0016-cluster-upgrade-node-maintenance.html">Lesson 0016 — 叢集升級與節點維護（Killercoda）</a></li>
+  <li><a href="../lessons/0017-helm-kustomize-crd-operator.html">Lesson 0017 — Helm、Kustomize、CRD 與 Operator</a></li>
+</ul>
+
+<h3>Phase 5 故障排除與應考衝刺</h3>
+<ul>
+  <li><a href="../lessons/0018-troubleshooting-pods.html">Lesson 0018 — 故障排除 I：Pod 與容器層</a></li>
+  <li><a href="../lessons/0019-troubleshooting-cluster-network.html">Lesson 0019 — 故障排除 II：節點、控制平面與網路服務</a></li>
+  <li><a href="../lessons/0020-cka-mock-exam.html">Lesson 0020 — CKA 模擬考與衝刺策略</a></li>
+</ul>
+
+<p><a href="glossary.html">Kubernetes 詞彙表</a> · 延伸閱讀：<a href="https://kubernetes.io/docs/concepts/overview/components/">官方：Kubernetes Components</a></p>
+
+<div class="lesson-footer">
+  考綱會隨 Kubernetes 版本演進；每次備考階段開始前應重新查核官方 PDF 權重。課程目錄於 2026-09-07 隨 0005–0020 預產出更新為 20 課。
+</div>
+
+</body>
+</html>

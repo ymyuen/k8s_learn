@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0011 — Ingress 與 Gateway API：L7 路由</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 3 · 對應考綱：<a href="../reference/cka-domain-map.html">Services &amp; Networking（20%）</a> · 需時約 35 分鐘</p>
+
+<h1>Ingress 與 Gateway API：L7 路由</h1>
+
+<p>0009 的 NodePort 已經能把流量從外部帶進來，但它是「IP:Port」等級——每支服務都要記一個 port，也不是一般人能懂的網址。本課把入口升級到第七層（HTTP）：<a href="../reference/glossary.html">Ingress</a> 讓你用<strong>「網址（host）+ 路徑（path）」</strong>把外部流量路由到不同的 Service，例如 <code>example.com/foo</code> → 服務 A、<code>example.com/bar</code> → 服務 B。同場加映概念級認識 <a href="../reference/glossary.html">Gateway API</a>（考綱點名、但 CKA 只考到概念）。</p>
+
+<div class="warn box">
+  <div class="box-title">本課先重建叢集（一次性）</div>
+  <p>Ingress Controller 要接收「從 host 進來的 80/443」，必須在 kind 建叢集時把節點的 80/443 mapping 到 host——舊叢集（0005–0010）沒有這個設定，所以<strong>重建</strong>。重建會清掉所有練習物件，也洗掉 0007 裝的 metrics-server（沒關係，0019 開場會補裝）。課末別刪這個叢集——下一課會把整座叢集刪掉重建、改裝 Calico（換 CNI），屆時再見。</p>
+</div>
+
+<h2>L7 vs L4：一個認網址、一個認 port</h2>
+
+<table>
+  <thead>
+    <tr><th></th><th>Service（L4，0009）</th><th>Ingress（L7，本課）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>看什麼</strong></td>
+      <td>IP + port（TCP/UDP）</td>
+      <td>HTTP host、path、headers</td>
+    </tr>
+    <tr>
+      <td><strong>誰來路由</strong></td>
+      <td>kube-proxy 的規則</td>
+      <td>Ingress Controller（一支真正跑 HTTP server 的 Pod）</td>
+    </tr>
+    <tr>
+      <td><strong>典型用法</strong></td>
+      <td>叢集內呼叫、TCP/UDP 服務</td>
+      <td>對外 HTTP/HTTPS 服務、網址路由</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Ingress 三件套：資源、類別、控制器</h2>
+<p>Ingress 機制由三個角色組成，缺一不可：</p>
+<ul>
+  <li><strong><a href="../reference/glossary.html">Ingress</a>（資源）</strong>：你宣告「哪個 host＋path 轉到哪個 Service」的規則——它只是一份資料。</li>
+  <li><strong><a href="../reference/glossary.html">Ingress Controller</a>（控制器）</strong>：真正跑在叢集裡的程式（我們用 ingress-nginx，一隻 nginx）。它 watch Ingress 資源，把規則翻譯成自己的設定並實際收流量。</li>
+  <li><strong><a href="../reference/glossary.html">IngressClass</a>（類別）</strong>：把「Ingress 資源」連結到「Controller」的接頭——一個叢集可以同時有多家 Controller（nginx、traefik…），Ingress 用 <code>ingressClassName</code> 指名要用哪一家。</li>
+</ul>
+<div class="terminal box">
+  <div class="box-title">三者關係一句話</div>
+  <pre>Ingress（規則：/foo → foo-svc）───ingressClassName───&gt; IngressClass（nginx）
+                                                        │ 指向
+                                                        ▼
+                              Ingress Controller（實際收流量的 nginx Pod）</pre>
+</div>
+
+<h2>實作：重建帶 host port 的叢集</h2>
+
+<div class="terminal box">
+  <div class="box-title">重建 ingress-ready 叢集</div>
+  <pre><span class="comment"># 1. 先看舊叢集（0005–0010 用下來的雙節點）</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kind delete cluster</span>
+
+<span class="comment"># 2. 建立新設定檔 kind-ingress.yaml（control-plane 標上 ingress-ready，
+#     並把節點 80/443 mapping 到 host 的 80/443）</span>
+<span class="prompt">nano kind-ingress.yaml</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">kind-ingress.yaml 全文</div>
+  <pre><span class="comment"># kind-ingress.yaml — 0001 的雙節點設定 + ingress-ready 三行</span>
+<span class="prompt">kind: Cluster</span>
+<span class="prompt">apiVersion: kind.x-k8s.io/v1alpha4</span>
+<span class="prompt">nodes:</span>
+<span class="prompt">- role: control-plane</span>
+<span class="prompt">  kubeadmConfigPatches:</span>
+<span class="prompt">  - |</span>
+<span class="prompt">    kind: InitConfiguration</span>
+<span class="prompt">    nodeRegistration:</span>
+<span class="prompt">      kubeletExtraArgs:</span>
+<span class="prompt">        node-labels: "ingress-ready=true"</span>
+<span class="prompt">  extraPortMappings:</span>
+<span class="prompt">  - containerPort: 80</span>
+<span class="prompt">    hostPort: 80</span>
+<span class="prompt">    protocol: TCP</span>
+<span class="prompt">  - containerPort: 443</span>
+<span class="prompt">    hostPort: 443</span>
+<span class="prompt">    protocol: TCP</span>
+<span class="prompt">- role: worker</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">建叢集並驗證 label</div>
+  <pre><span class="comment"># 3. 建立（約 2 分鐘）</span>
+<span class="prompt">kind create cluster --config kind-ingress.yaml</span>
+<span class="prompt">kubectl get nodes</span>
+
+<span class="comment"># 4. 確認 control-plane 掛著 ingress-ready=true（kubelet 註冊時打的 label）</span>
+<span class="prompt">kubectl get nodes --show-labels</span></pre>
+</div>
+
+<h2>實作 A：安裝 Ingress Controller</h2>
+
+<div class="terminal box">
+  <div class="box-title">安裝 ingress-nginx（kind 專用 manifest，v1.15.1 釘版）</div>
+  <pre><span class="comment"># 5. 官方 kind provider manifest（一次建好 Namespace/RBAC/Deployment/IngressClass…）</span>
+<span class="prompt">kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.15.1/deploy/static/provider/kind/deploy.yaml</span>
+<span class="prompt">kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller</span>
+
+<span class="comment"># 6. 控制器 Pod 一定要在 kind-control-plane 上——host 的 80/443 只 mapping 給它</span>
+<span class="prompt">kubectl -n ingress-nginx get pods -o wide</span>
+
+<span class="comment"># 7. 這份 manifest 沒有釘節點，控制器常會落在 kind-worker——若如此，
+#    用 0005 的 nodeSelector 把它釘回 control-plane（ingress-ready label 只有它）</span>
+<span class="prompt">kubectl -n ingress-nginx patch deployment ingress-nginx-controller --type=json -p '[{"op":"replace","path":"/spec/template/spec/nodeSelector","value":{"ingress-ready":"true","kubernetes.io/os":"linux"}}]'</span>
+<span class="prompt">kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller</span>
+<span class="prompt">kubectl -n ingress-nginx get pods -o wide</span>
+
+<span class="comment"># 8. 看這個 manifest 幫你建好的 IngressClass（名字叫 nginx）</span>
+<span class="prompt">kubectl get ingressclass</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 5 步的 manifest 一次建好了「控制器 + IngressClass」：以後寫 Ingress 只要 <code>ingressClassName: nginx</code> 就自動接到它。第 7 步把 0005 的 nodeSelector 派上用場——這份 manifest 沒釘節點，控制器常落在 worker，而 host port 只 mapping 在 control-plane，所以多半要自己補第 7 步把控制器釘回去（真實世界叫「把工作負載釘到特定節點」）。</p>
+</div>
+
+<h2>實作 B：兩支服務、一個 Ingress、路徑分流</h2>
+
+<div class="terminal box">
+  <div class="box-title">app.yaml — 兩支回自己 hostname 的 echo 服務</div>
+  <pre><span class="comment"># app.yaml — foo-app 與 bar-app 各一支 Deployment + Service（用官方 e2e 映像）</span>
+<span class="prompt">apiVersion: apps/v1</span>
+<span class="prompt">kind: Deployment</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: foo-app</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  replicas: 1</span>
+<span class="prompt">  selector:</span>
+<span class="prompt">    matchLabels:</span>
+<span class="prompt">      app: foo</span>
+<span class="prompt">  template:</span>
+<span class="prompt">    metadata:</span>
+<span class="prompt">      labels:</span>
+<span class="prompt">        app: foo</span>
+<span class="prompt">    spec:</span>
+<span class="prompt">      containers:</span>
+<span class="prompt">      - name: app</span>
+<span class="prompt">        image: registry.k8s.io/e2e-test-images/agnhost:2.39</span>
+<span class="prompt">        command: ["/agnhost", "serve-hostname", "--http=true", "--port=8080"]</span>
+<span class="prompt">        ports:</span>
+<span class="prompt">        - containerPort: 8080</span>
+<span class="prompt">---</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Service</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: foo-svc</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  selector:</span>
+<span class="prompt">    app: foo</span>
+<span class="prompt">  ports:</span>
+<span class="prompt">  - port: 8080</span>
+<span class="prompt">---</span>
+<span class="prompt">apiVersion: apps/v1</span>
+<span class="prompt">kind: Deployment</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: bar-app</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  replicas: 1</span>
+<span class="prompt">  selector:</span>
+<span class="prompt">    matchLabels:</span>
+<span class="prompt">      app: bar</span>
+<span class="prompt">  template:</span>
+<span class="prompt">    metadata:</span>
+<span class="prompt">      labels:</span>
+<span class="prompt">        app: bar</span>
+<span class="prompt">    spec:</span>
+<span class="prompt">      containers:</span>
+<span class="prompt">      - name: app</span>
+<span class="prompt">        image: registry.k8s.io/e2e-test-images/agnhost:2.39</span>
+<span class="prompt">        command: ["/agnhost", "serve-hostname", "--http=true", "--port=8080"]</span>
+<span class="prompt">        ports:</span>
+<span class="prompt">        - containerPort: 8080</span>
+<span class="prompt">---</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Service</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: bar-svc</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  selector:</span>
+<span class="prompt">    app: bar</span>
+<span class="prompt">  ports:</span>
+<span class="prompt">  - port: 8080</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用兩支服務</div>
+  <pre><span class="comment"># 9. 套用並等兩支 Deployment 就緒</span>
+<span class="prompt">nano app.yaml</span>
+<span class="prompt">kubectl apply -f app.yaml</span>
+<span class="prompt">kubectl rollout status deployment/foo-app</span>
+<span class="prompt">kubectl rollout status deployment/bar-app</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">ingress.yaml — /foo 轉 foo-svc、/bar 轉 bar-svc</div>
+  <pre><span class="comment"># ingress.yaml — ingressClassName 指名 nginx 控制器</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: Ingress</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: demo-ingress</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  ingressClassName: nginx</span>
+<span class="prompt">  rules:</span>
+<span class="prompt">  - http:</span>
+<span class="prompt">      paths:</span>
+<span class="prompt">      - path: /foo</span>
+<span class="prompt">        pathType: Prefix</span>
+<span class="prompt">        backend:</span>
+<span class="prompt">          service:</span>
+<span class="prompt">            name: foo-svc</span>
+<span class="prompt">            port:</span>
+<span class="prompt">              number: 8080</span>
+<span class="prompt">      - path: /bar</span>
+<span class="prompt">        pathType: Prefix</span>
+<span class="prompt">        backend:</span>
+<span class="prompt">          service:</span>
+<span class="prompt">            name: bar-svc</span>
+<span class="prompt">            port:</span>
+<span class="prompt">              number: 8080</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用並從 host 打</div>
+  <pre><span class="comment"># 10. 套用 Ingress 後看 ADDRESS：kind 的 manifest 把狀態寫成 localhost</span>
+<span class="prompt">nano ingress.yaml</span>
+<span class="prompt">kubectl apply -f ingress.yaml</span>
+<span class="prompt">kubectl get ingress demo-ingress</span>
+
+<span class="comment"># 11. 從 WSL2 host 直接 curl localhost——路徑分流生效</span>
+<span class="prompt">curl localhost/foo</span>
+<span class="comment">#    回應 foo-app（那一支 Pod 的 hostname）</span>
+<span class="prompt">curl localhost/bar</span>
+<span class="comment">#    回應 bar-app</span>
+
+<span class="comment"># 12. 沒被任何 path 接到的地方：404（控制器預設的 not-found）</span>
+<span class="prompt">curl -i localhost/</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 11 步是「L7 路由」的全部意義：同一台 <code>localhost:80</code>，靠「路徑」分別送到兩支不同的 Service。回到 0009 你會發現這件事 NodePort 做不到——NodePort 一個 port 只能對一支服務。第 12 步的 404 來自控制器自己，代表流量有到控制器、只是沒規則匹配。</p>
+  <p><strong>在 WSL2 curl localhost 不通？</strong>改用 Windows 端（PowerShell）的 <code>curl http://localhost/foo</code>，或檢查 Docker Desktop 是否把 port 80 綁定成功。</p>
+</div>
+
+<h2>實作 C：Ingress 加 TLS（https）</h2>
+<p>Ingress 的 TLS 很簡單：<strong>TLS 憑證是「Secret」，Ingress 引用 Secret 就自動終止 TLS</strong>（pod 內部還是 http）。</p>
+
+<div class="terminal box">
+  <div class="box-title">自簽憑證 → Secret</div>
+  <pre><span class="comment"># 13. openssl 產生自簽憑證（demo.local 當測試網域；-nodes 指不加密私鑰）</span>
+<span class="prompt">openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout tls.key -out tls.crt -subj "/CN=demo.local"</span>
+
+<span class="comment"># 14. 包成 type=kubernetes.io/tls 的 Secret（cert/key 兩把鑰匙給齊）</span>
+<span class="prompt">kubectl create secret tls demo-tls --cert=tls.crt --key=tls.key</span>
+<span class="prompt">kubectl get secret demo-tls</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">ingress-tls.yaml — host + tls 兩段加進去</div>
+  <pre><span class="comment"># ingress-tls.yaml — tls 段：憑證給 demo-tls，只對 demo.local 這個 host 生效</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: Ingress</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: tls-ingress</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  ingressClassName: nginx</span>
+<span class="prompt">  tls:</span>
+<span class="prompt">  - hosts:</span>
+<span class="prompt">    - demo.local</span>
+<span class="prompt">    secretName: demo-tls</span>
+<span class="prompt">  rules:</span>
+<span class="prompt">  - host: demo.local</span>
+<span class="prompt">    http:</span>
+<span class="prompt">      paths:</span>
+<span class="prompt">      - path: /foo</span>
+<span class="prompt">        pathType: Prefix</span>
+<span class="prompt">        backend:</span>
+<span class="prompt">          service:</span>
+<span class="prompt">            name: foo-svc</span>
+<span class="prompt">            port:</span>
+<span class="prompt">              number: 8080</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用並用 https 打</div>
+  <pre><span class="comment"># 15. 套用後，--resolve 把 demo.local 指到 127.0.0.1（我們沒有真的 DNS）；-k 略過自簽警告</span>
+<span class="prompt">nano ingress-tls.yaml</span>
+<span class="prompt">kubectl apply -f ingress-tls.yaml</span>
+<span class="prompt">curl -k --resolve demo.local:443:127.0.0.1 https://demo.local/foo</span>
+<span class="comment">#    回應 foo-app——這次是走 HTTPS 進來的</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾與課末狀態</div>
+  <pre><span class="comment"># 16. 清掉示範應用（叢集本身保留給 0012 換 CNI）</span>
+<span class="prompt">kubectl delete -f ingress.yaml -f ingress-tls.yaml</span>
+<span class="prompt">kubectl delete -f app.yaml</span>
+<span class="prompt">kubectl delete secret demo-tls</span>
+<span class="prompt">rm -f tls.key tls.crt app.yaml ingress.yaml ingress-tls.yaml</span>
+<span class="prompt">kubectl get ingress,svc,pods</span></pre>
+</div>
+
+<h2>Gateway API：Ingress 的下一代（概念）</h2>
+<p><a href="../reference/glossary.html">Gateway API</a> 是官方正在推的下一代流量 API（ingress 的演化）。它把「入口」拆成更細的角色與 CRD：<code>GatewayClass</code>（類似 IngressClass）、<code>Gateway</code>（實際的入口點，如 LB）、<code>HTTPRoute</code>（路由規則，可跨 namespace 引用後端）。優點：更具表達力（headers 路由、權重分流、跨 namespace）、也更適合多個團隊共用一個入口。CKA 考綱點名它，但概念理解即可，不需要背 YAML。</p>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 三件套：<strong>Ingress＝規則資料、IngressClass＝指名哪家控制器、Ingress Controller＝真正收流量那隻 Pod</strong>——ADDRESS 空著通常代表 Controller 沒起來。② <code>kubectl get ingress</code> 看 ADDRESS（kind 會是 localhost）與 <code>describe ingress</code> 看規則。③ TLS：憑證存成 <code>kubernetes.io/tls</code> Secret（key：tls.crt/tls.key），Ingress 的 <code>tls.secretName</code> 引用即可。④ pathType 用 Prefix 就夠應付九成考題；host 與 path 都可省略（都省略＝全部流量）。⑤ Ingress 規則與後端 Service 要在同 namespace，除非用 Gateway API。⑥ 出問題先分層：host 通不通 → controller pod 在不在 → ingress 規則 → endpoints（0009–0010 的舊招）。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你重建了一個 ingress-ready 叢集（host 80/443 → 節點），並裝好 ingress-nginx（v1.15.1）。</li>
+  <li>你見證了 L7 路由：同一個 port，靠 /foo 與 /bar 分流到兩支不同 Service。</li>
+  <li>你用自簽憑證 + TLS Secret，讓 Ingress 終止 HTTPS。</li>
+  <li>你建立 Ingress／IngressClass／Ingress Controller 三件套的心智模型，並認識 Gateway API 的位置。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">真正把 Ingress 規則轉成流量轉送的是誰？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">Ingress 資源</button>
+    <button class="quiz-opt">IngressClass</button>
+    <button class="quiz-opt">Ingress Controller</button>
+    <button class="quiz-opt">kube-proxy</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Ingress 的 TLS 憑證存在哪裡？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">Secret</button>
+    <button class="quiz-opt">ConfigMap</button>
+    <button class="quiz-opt">PV</button>
+    <button class="quiz-opt">Ingress 本身</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="3">
+  <p class="quiz-q">Ingress 的 ingressClassName 欄位用來？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">命名規則</button>
+    <button class="quiz-opt">指定網域</button>
+    <button class="quiz-opt">指定憑證</button>
+    <button class="quiz-opt">指名控制器</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>入口搞定了，下一課處理「內部防線」：<a href="../reference/glossary.html">NetworkPolicy</a>——叢集內的防火牆規則，決定誰可以連誰。它需要支援它的 CNI 才有效（kindnet 不支援），所以下一課開場會再重建叢集並安裝 <a href="../reference/glossary.html">Calico</a>，順便把 CNI 是什麼徹底講清楚。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/concepts/services-networking/ingress/">Ingress（官方文件）</a>與<a href="https://kubernetes.io/docs/concepts/services-networking/gateway/">Gateway API（官方文件）</a> —— 本課的權威版。Ingress 那篇讀「What is Ingress」到「IngressClass」即可，約 15 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>

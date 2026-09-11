@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 0002 — Deployment、自我修復與 Rollout/Rollback</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="meta">Phase 1 · 對應考綱：<a href="../reference/cka-domain-map.html">Workloads &amp; Scheduling（15%）</a> · 需時約 20 分鐘</p>
+
+<h1>Deployment、自我修復與 Rollout/Rollback</h1>
+
+<p>上一課你用 <code>kubectl run nginx --image=nginx</code> 跑出一顆裸 Pod——然後發現它很脆弱：<code>kubectl delete pod nginx</code> 之後它就真的消失了。本課的目標只有一個：<strong>學會用 Deployment 包住 Pod，讓「Pod 死掉會自己長回來」變成一件理所當然的事</strong>。</p>
+
+<h2>控制器思維：期望狀態 vs 現況</h2>
+<p>回想 Lesson 0001 的關鍵心法——你宣告「我要什麼」，Kubernetes 負責「變成那樣」。Deployment 就是這個心法的第一次完整落地：</p>
+
+<div class="terminal box">
+  <div class="box-title">Reconcile loop（調節迴圈）</div>
+  <pre>你宣告：我要 3 顆 nginx Pod
+   ↓ 寫進 etcd（期望狀態）
+控制器不斷比對：現在有幾顆？
+   ├─ 現在有 3 顆 → 什麼都不用做
+   ├─ 現在有 2 顆 → 立刻補 1 顆   ← 這就是「自我修復」
+   └─ 現在有 5 顆 → 砍掉 2 顆</pre>
+</div>
+
+<p>這個迴圈由 <code>kube-controller-manager</code> 裡的控制器們執行（見 <a href="../reference/glossary.html">詞彙表 Controller</a>）。<strong>自我修復不是魔法，就是一道不斷比對的迴圈。</strong></p>
+
+<h2>Deployment 的三層結構</h2>
+<p>Deployment 不直接管 Pod，它透過 ReplicaSet 間接管。記住這張表，之後排障全靠它：</p>
+
+<table>
+  <thead>
+    <tr><th>層級</th><th>負責什麼</th><th>一個比喻</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Deployment</strong></td>
+      <td>管「版本」：滾動更新、回滾、期望副本數</td>
+      <td>發行負責人：決定現在該出哪一版</td>
+    </tr>
+    <tr>
+      <td><strong>ReplicaSet</strong></td>
+      <td>管「數量」：確保 N 顆 Pod 同時存在</td>
+      <td>排班主管：確保隨時有 3 個人上班</td>
+    </tr>
+    <tr>
+      <td><strong>Pod</strong></td>
+      <td>管「容器」：實際跑應用</td>
+      <td>員工：真的在做事的人</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Deployment 怎麼「認領」自己的 ReplicaSet 和 Pod？靠 <strong>Label &amp; Selector</strong>——Deployment 用 selector 選中它的 ReplicaSet，ReplicaSet 再用 selector 選中它的 Pod。細節留到後續課程，現在先記住：「誰管誰，是靠標籤認的」。</p>
+
+<h2>實作 A：自我修復</h2>
+<p>在你的 kind 叢集（單節點就夠用）開一個新終端機照打：</p>
+
+<div class="terminal box">
+  <div class="box-title">把 3 顆 nginx Pod 變成 Deployment</div>
+  <pre><span class="comment"># 1. 建立 Deployment，期望 3 顆副本</span>
+<span class="prompt">kubectl create deployment nginx --image=nginx:1.25 --replicas=3</span>
+
+<span class="comment"># 2. 一次看三層（deployments, replicasets, pods）</span>
+<span class="prompt">kubectl get deployments,replicasets,pods</span>
+
+<span class="comment"># 3. 故意刪掉一顆 Pod——注意 Pod 名字</span>
+<span class="prompt">kubectl delete pod nginx-<span style="font-style:italic">(隨機尾碼)</span></span>
+
+<span class="comment"># 4. 再列一次：Pod 名字尾碼變了，表示是「新的一顆」</span>
+<span class="prompt">kubectl get pods</span>
+
+<span class="comment"># 5. 看 Deployment 的事件——會看到 ReplicaSet 重建的紀錄</span>
+<span class="prompt">kubectl describe deployment nginx</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你該觀察到什麼</div>
+  <p>第 4 步的 Pod 列表裡，<strong>總數維持 3 顆</strong>，但被你刪掉的那一顆名字尾碼換了——那是 ReplicaSet 控制器幫你補上的新 Pod。這就是自我修復，親眼看到一次就懂了。你也會看到 <code>kubectl get pods</code> 輸出中每顆 Pod 的 READY 與 RESTARTS 欄位。</p>
+</div>
+
+<h2>實作 B：Rollout 與 Rollback</h2>
+<p>Deployment 的招牌能力：<strong>換版不中斷、出事能回滾</strong>。同一叢集繼續：</p>
+
+<div class="terminal box">
+  <div class="box-title">換版本、看歷程、回滾</div>
+  <pre><span class="comment"># 6. 把 image 從 nginx:1.25 換成 nginx:1.26（觸發 rollout）</span>
+<span class="prompt">kubectl set image deployment/nginx nginx=nginx:1.26</span>
+
+<span class="comment"># 7. 等 rollout 完成（會顯示 "deployment "nginx" successfully rolled out"）</span>
+<span class="prompt">kubectl rollout status deployment/nginx</span>
+
+<span class="comment"># 8. 看歷史版本——REVISION 欄就是版本號。
+#    CHANGE-CAUSE 顯示 &lt;none&gt; 是正常的（新版 kubectl 已不用 --record）。
+#    想留說明：kubectl annotate deployment/nginx kubernetes.io/change-cause="..."</span>
+<span class="prompt">kubectl rollout history deployment/nginx</span>
+
+<span class="comment"># 9. 反悔，回到上一版（1.25）。
+#    注意：undo 後會出現「新的」REVISION（例如 3），不是把 2 改回去——回滾本身也是新版本</span>
+<span class="prompt">kubectl rollout undo deployment/nginx</span>
+<span class="prompt">kubectl rollout status deployment/nginx</span>
+<span class="prompt">kubectl rollout history deployment/nginx   # 再看一次：多了一列 REVISION 3</span>
+
+<span class="comment"># 10. 觀察換版過程：-w = --watch，先印快照、再持續串流變化（新舊並存、逐批替換）。
+#     Ctrl+C 離開。想看到動態：開兩個終端機，一邊跑這行，另一邊 set image 或 delete pod</span>
+<span class="prompt">kubectl get pods -w</span>
+
+<span class="comment"># 11. 結束練習後清理</span>
+<span class="prompt">kubectl delete deployment nginx</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>以下三個是必背反射指令：<code>kubectl rollout status deployment/NAME</code>、<code>kubectl rollout history deployment/NAME</code>、<code>kubectl rollout undo deployment/NAME</code>。CKA 常考「更新 image 後確認成功」與「新版本出問題，回滾」——這三個指令各一鍵搞定。<code>--record</code> 已不建議使用，想留 change-cause 註解可用 <code>kubectl annotate</code>。<strong>讀歷史時別誤判</strong>：每次 <code>set image</code> 或 <code>rollout undo</code> 都會產生一個<strong>新的</strong> REVISION 編號（回滾=新版本），所以 undo 之後看到的不是舊編號復活，而是新編號。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你能解釋 Deployment → ReplicaSet → Pod 三層各自管什麼。</li>
+  <li>你親眼示範了自我修復：刪掉一顆 Pod，控制器自動補回。</li>
+  <li>你完成了一次滾動更新與一次回滾，並用 <code>-w</code> 觀察到換版過程新舊並存。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Pod 被刪掉後，誰讓副本數回到期望值？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">控制器</button>
+    <button class="quiz-opt">排程器</button>
+    <button class="quiz-opt">儲存庫</button>
+    <button class="quiz-opt">節點層</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">rollout undo 會把 Deployment 帶回哪裡？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">上個版本</button>
+    <button class="quiz-opt">最初版本</button>
+    <button class="quiz-opt">空副本集</button>
+    <button class="quiz-opt">全部刪除</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Deployment 靠什麼管住它的 Pod？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">標籤選擇器</button>
+    <button class="quiz-opt">記憶體位置</button>
+    <button class="quiz-opt">網路通訊埠</button>
+    <button class="quiz-opt">容器執行期</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Phase 1 繼續。我們接下來會把 Labels &amp; Selectors 講透（它是所有控制器的「認人」機制），再談 DaemonSet 與 Job——那兩種工作負載解決的是「Deployment 做不到」的場景。</p>
+<p>現在：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">看考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議的主要來源：</strong><a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/">Deployments（官方文件）</a> —— 本課的權威版。重點讀「Deployment 的運作方式」與「更新 Deployment」兩節，約 15 分鐘。</p>
+  <p><strong>有不清楚的地方？</strong>任何術語、指令或概念卡住，直接向講師（agent）提問——複述、圖解、或出更多練習都行。</p>
+</div>
+
+</body>
+</html>
