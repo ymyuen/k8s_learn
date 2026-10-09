@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0017 — Helm、Kustomize、CRD 與 Operator</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 4 · 對應考綱：<a href="../reference/cka-domain-map.html">Cluster Architecture, Installation &amp; Configuration（25%）</a> · 需時約 35 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第十七課 · 發佈架生三寶</span>
+  <h1>Lesson 0017：Helm、Kustomize、CRD 與 Operator</h1>
+  <p><strong>目標：</strong>搞掂「點樣將成套 app 交畀叢集」：<code>Helm</code> 裝大件嘢、<code>Kustomize</code> 疊環境差異、<code>CRD</code>＋<code>Operator</code> 等叢集識新物件，最後收埋 CNI/CSI/CRI 三介面，Phase 4 畢業！</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  0015／0016 喺 Killercoda 玩 kubeadm，呢課返本機 Calico 叢集（由 0012 留到而家）。現實唔會逐份 YAML 手打上 production——Helm 一鍵裝成套 DB，Kustomize 一個 base 派生晒 dev/prod，CRD＋Operator 等你自創資源。呢啲就係貼地嘅日常架生！
+</div>
+
+<h2>1. 睇下先：三種「交 YAML」嘅方法</h2>
+
+<table>
+  <thead>
+    <tr><th></th><th>Helm</th><th>Kustomize</th><th>原生 YAML＋kubectl</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>本質</strong></td>
+      <td>套件管理員（chart＝模板＋values）</td>
+      <td>宣告式「基底＋疊加」</td>
+      <td>一份份寫死嘅檔案</td>
+    </tr>
+    <tr>
+      <td><strong>換環境</strong></td>
+      <td><code>--set</code> 或換 values 檔</td>
+      <td>換 overlay 目錄</td>
+      <td>copy 一份改（最易出事）</td>
+    </tr>
+    <tr>
+      <td><strong>回滾／卸載</strong></td>
+      <td><code>helm rollback</code>／<code>uninstall</code></td>
+      <td>冇 release 概念（靠 kubectl）</td>
+      <td>冇（自己刪）</td>
+    </tr>
+    <tr>
+      <td><strong>啱用</strong></td>
+      <td>裝大型第三方套件（數據庫、監控）</td>
+      <td>自己維護嘅一組 YAML 要分環境</td>
+      <td>極簡、單一物件練習</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>一句記住：<strong>Helm 管「套件同版本」，Kustomize 管「同一份 YAML 嘅環境差異」。</strong></p>
+
+<div class="hk-callout">
+  <strong>🍜 港式比喻三連</strong><br>
+  Helm＝<strong>IKEA 成套傢俬／App Store 一鍵裝</strong>（chart 係說明書＋零件，release 係你屋企砌好嗰套，唔啱 rollback 換返舊款）；
+  Kustomize＝<strong>透明膠片疊圖</strong>（base 係底圖唔郁，overlay 係上面嗰塊膠片，只畫差異，疊埋就係 final）；
+  CRD＝<strong>寵物登記處學新字</strong>（未登記「龍貓」之前，表格唔識呢隻字；登記咗先交得表，但未請飼養員之前只係一張紙）。
+</div>
+
+<div class="diagram-card">
+  <h3>📦 三寶流程圖：Helm 回滾＋Kustomize 疊片＋CRD 登記鏈</h3>
+  <svg class="svg-diagram" viewBox="0 0 820 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Helm Kustomize CRD 三流程">
+    <!-- BOX 1: Helm -->
+    <g transform="translate(10,10)">
+      <rect width="800" height="150" rx="8" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="14" y="24" font-size="13" font-weight="bold" fill="#0969da">① Helm：chart＋values → release（IKEA／App Store）</text>
+      <g transform="translate(14,36)">
+        <rect width="170" height="90" rx="6" fill="#f0f7ff" stroke="#0969da" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#0969da">chart＋values</text>
+        <text x="10" y="38" font-size="11" fill="#333">bitnami/nginx</text>
+        <text x="10" y="54" font-size="11" fill="#333">＋ replicaCount</text>
+        <text x="10" y="70" font-size="11" fill="#666">說明書＋選項</text>
+      </g>
+      <g transform="translate(224,36)">
+        <rect width="210" height="90" rx="6" fill="#ddf4ff" stroke="#0969da" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#0969da">install → release myweb</text>
+        <text x="10" y="38" font-size="11" fill="#333">v2：Dep＋Svc 起好</text>
+        <text x="10" y="54" font-size="11" fill="#333">helm list 見到 v2</text>
+        <text x="10" y="70" font-size="11" fill="#666">--set 覆寫即 upgrade</text>
+      </g>
+      <g transform="translate(474,36)">
+        <rect width="150" height="90" rx="6" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#1a7f37">跑緊嘅嘢</text>
+        <text x="10" y="38" font-size="11" fill="#333">Deployment ✔</text>
+        <text x="10" y="54" font-size="11" fill="#333">Service ✔</text>
+        <text x="10" y="70" font-size="11" fill="#666">label myweb 跟身</text>
+      </g>
+      <path d="M 184 81 L 224 81" stroke="#0969da" stroke-width="3"/>
+      <polygon points="224,81 216,76 216,86" fill="#0969da"/>
+      <text x="186" y="71" font-size="10" fill="#0969da">install</text>
+      <path d="M 434 81 L 474 81" stroke="#1a7f37" stroke-width="3"/>
+      <polygon points="474,81 466,76 466,86" fill="#1a7f37"/>
+      <!-- rollback arrow underneath -->
+      <path d="M 329 140 L 120 140" stroke="#cf222e" stroke-width="2" stroke-dasharray="5,4"/>
+      <polygon points="120,140 130,135 130,145" fill="#cf222e"/>
+      <text x="195" y="134" font-size="11" fill="#cf222e">rollback → v1（唔啱即換返舊款）</text>
+    </g>
+    <!-- BOX 2: Kustomize -->
+    <g transform="translate(10,172)">
+      <rect width="800" height="150" rx="8" fill="#ffffff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="14" y="24" font-size="13" font-weight="bold" fill="#1a7f37">② Kustomize：透明膠片疊圖（base＋overlay＝final）</text>
+      <g transform="translate(14,36)">
+        <rect width="200" height="90" rx="6" fill="#f6fbf7" stroke="#1a7f37" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#1a7f37">base（底圖）</text>
+        <text x="10" y="38" font-size="11" fill="#333">deployment replicas: 1</text>
+        <text x="10" y="54" font-size="11" fill="#333">＋ service</text>
+        <text x="10" y="70" font-size="11" fill="#666">原檔唔郁</text>
+      </g>
+      <text x="222" y="86" font-size="16" font-weight="bold" fill="#1a7f37">＋</text>
+      <g transform="translate(250,36)">
+        <rect width="200" height="90" rx="6" fill="#fff8c5" stroke="#bf8700" stroke-width="2" stroke-dasharray="6,4"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#7d4e00">overlay 膠片</text>
+        <text x="10" y="38" font-size="11" fill="#333">prod patch：count 3</text>
+        <text x="10" y="54" font-size="11" fill="#333">只寫差異</text>
+        <text x="10" y="70" font-size="11" fill="#666">半透明疊上去</text>
+      </g>
+      <text x="458" y="86" font-size="16" font-weight="bold" fill="#1a7f37">＝</text>
+      <g transform="translate(486,36)">
+        <rect width="200" height="90" rx="6" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#1a7f37">final 3 ✔</text>
+        <text x="10" y="38" font-size="11" fill="#333">kubectl kustomize 睇到</text>
+        <text x="10" y="54" font-size="11" fill="#333">replicas: 3</text>
+        <text x="10" y="70" font-size="11" fill="#666">先 preview 後 -k</text>
+      </g>
+    </g>
+    <!-- BOX 3: CRD chain -->
+    <g transform="translate(10,334)">
+      <rect width="800" height="150" rx="8" fill="#ffffff" stroke="#8250df" stroke-width="2"/>
+      <text x="14" y="24" font-size="13" font-weight="bold" fill="#8250df">③ CRD 登記鏈：識新字 → 交表 → 等飼養員（次序唔調得）</text>
+      <g transform="translate(14,36)">
+        <rect width="140" height="90" rx="6" fill="#f5f0ff" stroke="#8250df" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#8250df">CRD 登記</text>
+        <text x="10" y="38" font-size="11" fill="#333">Widget 新字</text>
+        <text x="10" y="54" font-size="11" fill="#333">apply 先！</text>
+        <text x="10" y="70" font-size="11" fill="#666">① 學識個字</text>
+      </g>
+      <g transform="translate(174,36)">
+        <rect width="150" height="90" rx="6" fill="#f5f0ff" stroke="#8250df" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#8250df">apiserver 識字</text>
+        <text x="10" y="38" font-size="11" fill="#333">api-resources</text>
+        <text x="10" y="54" font-size="11" fill="#333">見到 widgets</text>
+        <text x="10" y="70" font-size="11" fill="#666">表格收得了</text>
+      </g>
+      <g transform="translate(344,36)">
+        <rect width="150" height="90" rx="6" fill="#f5f0ff" stroke="#8250df" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#8250df">CR 交表入 etcd</text>
+        <text x="10" y="38" font-size="11" fill="#333">my-widget 存低</text>
+        <text x="10" y="54" font-size="11" fill="#333">② 交 Pet 表</text>
+        <text x="10" y="70" font-size="11" fill="#666">只係一筆數據</text>
+      </g>
+      <g transform="translate(514,36)">
+        <rect width="120" height="90" rx="6" fill="none" stroke="#cf222e" stroke-width="2" stroke-dasharray="6,4"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#cf222e">✕ 無 Pod</text>
+        <text x="10" y="38" font-size="11" fill="#cf222e">冇人起嘢</text>
+        <text x="10" y="54" font-size="11" fill="#666">冇 controller</text>
+        <text x="10" y="70" font-size="11" fill="#666">得張紙</text>
+      </g>
+      <g transform="translate(654,36)">
+        <rect width="130" height="90" rx="6" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#1a7f37">＋Operator ✔</text>
+        <text x="10" y="38" font-size="11" fill="#333">③ 飼養員返工</text>
+        <text x="10" y="54" font-size="11" fill="#333">watch CR 起嘢</text>
+        <text x="10" y="70" font-size="11" fill="#666">Dep＋Svc 出世</text>
+      </g>
+      <path d="M 154 81 L 174 81" stroke="#8250df" stroke-width="3"/>
+      <polygon points="174,81 166,76 166,86" fill="#8250df"/>
+      <path d="M 324 81 L 344 81" stroke="#8250df" stroke-width="3"/>
+      <polygon points="344,81 336,76 336,86" fill="#8250df"/>
+      <path d="M 494 81 L 514 81" stroke="#cf222e" stroke-width="2" stroke-dasharray="4,3"/>
+      <polygon points="514,81 506,76 506,86" fill="#cf222e"/>
+      <text x="490" y="71" font-size="10" fill="#cf222e">-X-</text>
+      <path d="M 634 60 L 654 60" stroke="#1a7f37" stroke-width="2" stroke-dasharray="4,3"/>
+      <polygon points="654,60 646,55 646,65" fill="#1a7f37"/>
+      <text x="560" y="112" font-size="10" fill="#595f69">Operator ghost（虛線鬼影：未請之前唔存在）</text>
+    </g>
+    <text x="10" y="508" font-size="12" font-weight="bold" fill="#8250df">次序鐵律：先 apply CRD → 再 apply CR → 最後 controller 先有反應（調轉會 Invalid／NotFound）</text>
+    <text x="10" y="528" font-size="11" fill="#595f69">落手前一定 preview：helm template／helm diff（Helm）＋ kubectl kustomize（Kustomize），唔好盲 apply。</text>
+  </svg>
+  <p>揀架生好簡單：<strong>裝人哋嘅大件嘢用 Helm，派生自己嘅多環境用 Kustomize，自創資源先用 CRD＋Operator</strong>。</p>
+</div>
+
+<table>
+  <thead>
+    <tr><th>指令</th><th>食咩</th><th>幾時用</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>kubectl apply -f</code></td><td>散紙：單一／多份 YAML 檔</td><td>極簡練習、CRD／CR 逐份交（本課實作 C）</td></tr>
+    <tr><td><code>kubectl apply -k</code></td><td>成個 folder：含 kustomization.yaml 嘅目錄</td><td>base／overlay 疊加（本課實作 B）</td></tr>
+    <tr><td><code>kubectl kustomize 目錄</code></td><td>唔 apply，淨係印合併結果</td><td>preview 神器：先睇 final 啱唔啱再 <code>-k</code></td></tr>
+  </tbody>
+</table>
+
+<h2>2. 實作 A：Helm 裝一套 nginx</h2>
+
+<div class="terminal box">
+  <div class="box-title">喺本機裝 helm（官方安裝腳本，一次性）</div>
+  <pre><span class="comment"># 1. 先確認叢集仲喺度（0012–0014 嘅 Calico 雙節點；若唔喺，用 0012 嘅 kind-calico.yaml 重建）</span>
+<span class="prompt">kubectl get nodes</span>
+
+<span class="comment"># 2. 下載並執行官方安裝腳本（get-helm-3）</span>
+<span class="prompt">curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3</span>
+<span class="prompt">chmod 700 get_helm.sh</span>
+<span class="prompt">./get_helm.sh</span>
+<span class="prompt">helm version</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">加 repo、搜尋、安裝</div>
+  <pre><span class="comment"># 3. 加入 Bitnami 嘅 chart repo（Helm 嘅「軟件來源」）
+#    Bitnami 而家都提供 OCI registry（oci://registry-1.docker.io/bitnamicharts），
+#    本課用傳統 repo 教學；兩者指令語法略有唔同</span>
+<span class="prompt">helm repo add bitnami https://charts.bitnami.com/bitnami</span>
+<span class="prompt">helm repo update</span>
+
+<span class="comment"># 4. 搜尋 repo 入面嘅 chart；-l 列出全部版本，揀個「釘版」安裝（--version）</span>
+<span class="prompt">helm search repo bitnami/nginx --versions | head -n 5</span>
+<span class="prompt">helm search repo bitnami/nginx</span>
+
+<span class="comment"># 5. 安裝：release 名叫 myweb，chart 係 bitnami/nginx
+#    （chart 會展開成 Deployment/Service/…成組 YAML 送入叢集）
+#    入版控嘅團隊會釘 chart 版本：helm install myweb bitnami/nginx --version &lt;上一步睇到嘅版號&gt;</span>
+<span class="prompt">helm install myweb bitnami/nginx</span>
+<span class="prompt">helm list</span>
+
+<span class="comment"># 6. 用 helm 嘅 label 睇佢到底起咗咩</span>
+<span class="prompt">kubectl get all -l app.kubernetes.io/instance=myweb</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">--set 覆寫、升級、回滾、卸載</div>
+  <pre><span class="comment"># 7. 用 --set 覆寫 chart 嘅預設值（每個 chart 嘅 keys 以 helm show values 輸出為準）</span>
+<span class="prompt">helm show values bitnami/nginx | grep -A4 -i 'replicaCount\|service:'</span>
+<span class="prompt">helm upgrade myweb bitnami/nginx --set replicaCount=3</span>
+<span class="prompt">kubectl get pods -l app.kubernetes.io/instance=myweb</span>
+<span class="comment">#    副本由 1 變 3</span>
+
+<span class="comment"># 8. 睇 release 嘅版本歷史</span>
+<span class="prompt">helm history myweb</span>
+
+<span class="comment"># 9. 回滾去第一個版本（revision 1）——Helm 版嘅 rollout undo</span>
+<span class="prompt">helm rollback myweb 1</span>
+<span class="prompt">kubectl get pods -l app.kubernetes.io/instance=myweb</span>
+
+<span class="comment"># 10. 卸載：將 chart 起出嚟嘅嘢一次清光</span>
+<span class="prompt">helm uninstall myweb</span>
+<span class="prompt">helm list</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>Helm 嘅核心價值喺第 10 步：<strong>一次卸載，全部清走</strong>——所有由 chart 起嘅物件都帶 <code>app.kubernetes.io/instance=myweb</code>，helm 靠呢個回收。如果某個 chart 嘅 <code>--set</code> 鍵名同呢度唔同，<code>helm show values bitnami/nginx</code> 會印出完整可 set 清單——照佢為準。</p>
+</div>
+
+<h2>3. 實作 B：Kustomize——基底同疊加</h2>
+
+<div class="terminal box">
+  <div class="box-title">建立 base（基底）</div>
+  <pre><span class="comment"># 11. 用 0004 嘅 dry-run 打法產出 Deployment 同 Service，擺入 kustom/base/</span>
+<span class="prompt">mkdir -p kustom/base kustom/overlays/prod</span>
+<span class="prompt">kubectl create deployment kustom-demo --image=nginx:1.25 --replicas=1 --dry-run=client -o yaml &gt; kustom/base/deployment.yaml</span>
+<span class="prompt">kubectl create service clusterip kustom-demo --tcp=80:80 --dry-run=client -o yaml &gt; kustom/base/service.yaml</span>
+
+<span class="comment"># 12. base 嘅 kustomization.yaml：宣告「基底包含邊啲檔」</span>
+<span class="prompt">nano kustom/base/kustomization.yaml</span>
+<span class="comment"># 內容：
+# apiVersion: kustomize.config.k8s.io/v1beta1
+# kind: Kustomization
+# resources:
+# - deployment.yaml
+# - service.yaml</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">預覽並套用 base</div>
+  <pre><span class="comment"># 13. kubectl kustomize 直接印出合併後嘅完整 YAML（kustomize 嘅「dry-run」）</span>
+<span class="prompt">kubectl kustomize kustom/base | head -n 30</span>
+
+<span class="comment"># 14. -k 就係「apply 呢個 kustomization」</span>
+<span class="prompt">kubectl apply -k kustom/base</span>
+<span class="prompt">kubectl get deploy,svc kustom-demo</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">prod overlay：只疊加「副本數變 3」</div>
+  <pre><span class="comment"># 15. overlay 嘅 kustomization.yaml：resources 指去 ../../base，再疊 patches</span>
+<span class="prompt">nano kustom/overlays/prod/kustomization.yaml</span>
+<span class="comment"># 內容：
+# apiVersion: kustomize.config.k8s.io/v1beta1
+# kind: Kustomization
+# resources:
+# - ../../base
+# replicas:
+# - name: kustom-demo
+#   count: 3</span>
+
+<span class="comment"># 16. 預覽 prod 版：得 replicas 嗰行被改成 3</span>
+<span class="prompt">kubectl kustomize kustom/overlays/prod | grep -E 'name:|replicas:'</span>
+<span class="prompt">kubectl apply -k kustom/overlays/prod</span>
+<span class="prompt">kubectl get deploy kustom-demo</span>
+<span class="comment">#    DESIRED 變成 3——基底冇郁，prod 疊加上咗</span>
+
+<span class="comment"># 17. 收尾</span>
+<span class="prompt">kubectl delete -k kustom/overlays/prod</span>
+<span class="prompt">rm -rf kustom</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>Kustomize 唔寫模板、唔改原檔：<strong>base 係一份「乾淨版」，overlay 只講「差異」</strong>。第 16 步嘅 <code>kubectl kustomize</code> 係佢嘅殺手鐧——先睇合併結果再套用。CKA 鍾考 <code>-k</code>（kustomization）同 <code>-f</code>（單一/多份 YAML）嘅分別。</p>
+</div>
+
+<h2>4. 實作 C：CRD、Custom Resource 同 Operator</h2>
+<p>Kubernetes 嘅 API 可以「生出新品種」：用 <a href="../reference/glossary.html">CRD</a>（CustomResourceDefinition）定義個新資源型別，之後 <code>kubectl apply</code> 嗰種型別嘅物件——<a href="../reference/glossary.html">Custom Resource（自訂資源）</a>。但留意：<strong>CR 存入 etcd 之後，冇 controller 嘅話佢就只係「一筆數據」</strong>，冇人會照佢個 spec 去起 Deployment。<a href="../reference/glossary.html">Operator</a> 就係「會睇某種 CR、將佢變成實際資源」嘅控制器（0002 學嘅控制器模式，延伸去自訂資源）。</p>
+
+<div class="terminal box">
+  <div class="box-title">crd-widgets.yaml — 定義「Widget」型別</div>
+  <pre><span class="comment"># crd-widgets.yaml — 宣告新資源型別：group example.com，kind Widget</span>
+<span class="prompt">apiVersion: apiextensions.k8s.io/v1</span>
+<span class="prompt">kind: CustomResourceDefinition</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: widgets.example.com</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  group: example.com</span>
+<span class="prompt">  names:</span>
+<span class="prompt">    kind: Widget</span>
+<span class="prompt">    listKind: WidgetList</span>
+<span class="prompt">    plural: widgets</span>
+<span class="prompt">    singular: widget</span>
+<span class="prompt">  scope: Namespaced</span>
+<span class="prompt">  versions:</span>
+<span class="prompt">  - name: v1</span>
+<span class="prompt">    served: true</span>
+<span class="prompt">    storage: true</span>
+<span class="prompt">    schema:</span>
+<span class="prompt">      openAPIV3Schema:</span>
+<span class="prompt">        type: object</span>
+<span class="prompt">        properties:</span>
+<span class="prompt">          spec:</span>
+<span class="prompt">            type: object</span>
+<span class="prompt">            properties:</span>
+<span class="prompt">              replicas:</span>
+<span class="prompt">                type: integer</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用 CRD，識返個新資源</div>
+  <pre><span class="comment"># 18. 套用 CRD</span>
+<span class="prompt">nano crd-widgets.yaml</span>
+<span class="prompt">kubectl apply -f crd-widgets.yaml</span>
+<span class="prompt">kubectl get crd widgets.example.com</span>
+
+<span class="comment"># 19. 由呢刻起，kubectl 識得 widgets 呢個資源</span>
+<span class="prompt">kubectl api-resources | grep widgets</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">cr-widget.yaml — 起個 Widget 實例</div>
+  <pre><span class="comment"># cr-widget.yaml — apiVersion = &lt;group&gt;/&lt;version&gt;，kind = Widget</span>
+<span class="prompt">apiVersion: example.com/v1</span>
+<span class="prompt">kind: Widget</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: my-widget</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  replicas: 3</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用、查詢、刪除</div>
+  <pre><span class="comment"># 20. 套用 CR——apiserver 照收、存入 etcd</span>
+<span class="prompt">nano cr-widget.yaml</span>
+<span class="prompt">kubectl apply -f cr-widget.yaml</span>
+<span class="prompt">kubectl get widgets</span>
+<span class="prompt">kubectl get widget my-widget -o yaml</span>
+<span class="comment">#    留意：冇任何 Pod 被起出嚟——因為冇 controller 睇住 Widget</span>
+
+<span class="comment"># 21. 收尾：刪 CR 同 CRD</span>
+<span class="prompt">kubectl delete -f cr-widget.yaml</span>
+<span class="prompt">kubectl delete -f crd-widgets.yaml</span>
+<span class="prompt">rm -f crd-widgets.yaml cr-widget.yaml get_helm.sh</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 20 步係明 Operator 嘅鎖匙：<strong>CR 只係數據，Controller 先係行為</strong>。真實世界嘅 Operator（如 prometheus-operator）會 watch「Prometheus 型 CR」，再幫你起返 Deployment、Service、RBAC 成組。你等如行到「自己寫控制器」嘅邊界——將 CRD＋CR 呢段練熟，就明 Operator 做緊咩。</p>
+</div>
+
+<h2>5. 三個介面收埋：CNI、CSI、CRI</h2>
+<p>Kubernetes 用三個「標準介面」外判底層實作，一路行嚟你都掂過：</p>
+<table>
+  <thead>
+    <tr><th>介面</th><th>管咩</th><th>本課程掂過嘅實作</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>CNI</strong></td><td>Pod 網路（IP 同連通性）</td><td>kindnet（0012 之前）、Calico（0012 起）</td></tr>
+    <tr><td><strong>CSI</strong></td><td>儲存（掛磁碟）</td><td>kind 內建 local-path（0008）</td></tr>
+    <tr><td><strong>CRI</strong></td><td>容器執行時期</td><td>containerd（kind／kubeadm 都用佢）</td></tr>
+  </tbody>
+</table>
+<p>口訣：<strong>CNI 管網、CSI 管存、CRI 管跑。</strong></p>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① Helm：<code>repo add</code> → <code>install</code> → <code>upgrade --set</code> → <code>history</code>／<code>rollback</code> → <code>uninstall</code>；release 係「一次安裝」嘅單位。② <code>-k</code> 食 kustomization 目錄、<code>-f</code> 食 YAML 檔；<code>kubectl kustomize 目錄</code> 可預覽。③ CRD 三步次序：<strong>先 apply CRD → 再 apply CR → 最後（若果有）controller 先反應</strong>。④ CR 嘅 apiVersion 係「group/version」（example.com/v1），唔係固定嗰幾個。⑤ 冇 controller 嘅 CR 只係一筆數據。⑥ 三介面口訣：CNI 網、CSI 存、CRI 跑。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你裝好 Helm，完成 install／--set 升級／rollback／uninstall 成個圈。</li>
+  <li>你用 Kustomize 嘅 base＋overlay 做到「基底唔郁、prod 疊加」，仲用 <code>-k</code> 套用。</li>
+  <li>你寫出極簡 CRD 同 CR，親眼見到「冇 controller 嘅 CR 只係數據」。</li>
+  <li>你將 CNI／CSI／CRI 三介面收埋入同一張表。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">Helm 嘅一次安裝叫做咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">chart 模板包</button>
+    <button class="quiz-opt">release 版本</button>
+    <button class="quiz-opt">repo 來源庫</button>
+    <button class="quiz-opt">values 數值檔</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">kubectl 套用 kustomization 目錄用邊個旗？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">-k 旗標套用</button>
+    <button class="quiz-opt">-f 旗標套用</button>
+    <button class="quiz-opt">-l 旗標篩選</button>
+    <button class="quiz-opt">-n 旗標指定</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">apply 咗 CRD 同 CR 之後，點解冇 Pod 跑起身？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">CRD 寫錯咗嘢</button>
+    <button class="quiz-opt">CR 冇被儲存到</button>
+    <button class="quiz-opt">冇 controller 睇</button>
+    <button class="quiz-opt">apiVersion 填錯</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Phase 4 畢業，你已經「識管叢集」。最後一段（Phase 5，Troubleshooting 30%）將 0001–0017 累積嘅除錯片段串成系統：下一課由 <a href="../reference/glossary.html">CrashLoopBackOff</a> 呢類「Pod 層」症狀開始，辦場五粒壞 Pod 嘅診斷賽。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://helm.sh/docs/">Helm 官方文件</a>同<a href="https://kubectl.docs.kubernetes.io/">Kustomize（kubectl 版文件）</a>同<a href="https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/">Extend the Kubernetes API with CustomResourceDefinitions（官方文件）</a> —— Helm 睇「Using Helm」、CRD 睇頭兩節就得，約 20 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0016-cluster-upgrade-node-maintenance.html">← 上一課：叢集升級</a>
+  <a href="../reference/cka-domain-map.html">考綱地圖 ➔</a>
+</div>
+</div>
+</body>
+</html>

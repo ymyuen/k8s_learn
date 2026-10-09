@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0014 — etcd 備份與還原</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 4 · 對應考綱：<a href="../reference/cka-domain-map.html">Cluster Architecture, Installation &amp; Configuration（25%）</a> · 需時約 30 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第十四課 · 叢集記憶體</span>
+  <h1>Lesson 0014：etcd 備份與還原</h1>
+  <p><strong>目標：</strong>親手對「仲生勾勾嘅 etcd」做 <code>snapshot save</code>、用 <code>snapshot status</code> 驗貨，再預演 <code>snapshot restore</code>。搞掂呢套，考試話要還原你唔會手震！</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  <a href="../reference/glossary.html">etcd</a> 係成個叢集嘅記憶——Deployment、Secret、Namespace 全部瞓喺入面。etcd 瓜咗等如失憶，CKA 實考「備份還原」成套：<strong>存、驗、還原</strong>，唔識就真係瀨嘢！
+</div>
+
+<h2>1. 睇下先：snapshot 係咩、restore 做緊咩</h2>
+<ul>
+  <li><strong>snapshot save</strong>：將成個 etcd 數據庫（連 member 狀態）倒成單一檔案。對住「仲生緊嘅 etcd」直接存就得，唔使停機。</li>
+  <li><strong>snapshot status</strong>：讀個 snapshot 檔印出 metadata（revision、總 key 數、db 大細）——備份完「驗到係好嘅」先算數。</li>
+  <li><strong>snapshot restore</strong>：將個 snapshot 檔「解壓」成一個<strong>全新嘅數據目錄</strong>。留意——佢<strong>唔係原地復活舊目錄</strong>，而係起個新 member 文件夾，再駁返畀 etcd 用。所以還原本質係：<strong>新數據目錄駁返 + 重啟 etcd</strong>。</li>
+</ul>
+<p>考試必背路徑：etcd 係 static pod，manifest 喺 <code>/etc/kubernetes/manifests/etcd.yaml</code>，數據目錄喺 <code>/var/lib/etcd</code>。憑證三件套固定擺喺 <code>/etc/kubernetes/pki/etcd/</code>：<code>ca.crt</code>（CA）、<code>server.crt</code>／<code>server.key</code>（etcd 自己）。</p>
+
+<div class="terminal box">
+  <div class="box-title">三條指令模板（背到爛）</div>
+  <pre><span class="comment"># 存</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 \</span>
+<span class="prompt">  --cacert=/etc/kubernetes/pki/etcd/ca.crt \</span>
+<span class="prompt">  --cert=/etc/kubernetes/pki/etcd/server.crt \</span>
+<span class="prompt">  --key=/etc/kubernetes/pki/etcd/server.key \</span>
+<span class="prompt">  snapshot save /backup/etcd-snapshot.db</span>
+
+<span class="comment"># 驗</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl snapshot status /backup/etcd-snapshot.db --write-out=table</span>
+
+<span class="comment"># 還原（起個新數據目錄 /var/lib/etcd-from-backup）</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl snapshot restore /backup/etcd-snapshot.db \</span>
+<span class="prompt">  --data-dir=/var/lib/etcd-from-backup</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">環境提醒：ETCDCTL_API=3</div>
+  <p>etcdctl 對 v3 API 有歷史包袱，考試慣例喺指令前加 <code>ETCDCTL_API=3</code> 確保行 v3。加咗無害、漏咗可能中伏——照抄就啱。endpoints 一律 <code>https://127.0.0.1:2379</code>（本機 etcd 就聽呢度）。</p>
+</div>
+
+<div class="hk-callout">
+  <strong>📱 港式比喻：電話 iCloud 備份</strong><br>
+  <code>snapshot save</code> 就係撳「立即備份」上 iCloud；之後新裝嘅 App（t1 起嘅 Deployment）唔會入返舊備份；
+  <code>snapshot restore</code> 等於<strong>買部新機倒嘢</strong>——唔係整返舊機，而係開個新殼（新數據目錄）再倒返舊資料，倒完之後裝嘅嘢全部唔見。
+</div>
+
+<div class="diagram-card">
+  <h3>💾 etcd 備份還原手術圖：五格漫畫</h3>
+  <svg class="svg-diagram" viewBox="0 0 820 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="etcd 五格還原手術漫畫">
+    <!-- panel 1 -->
+    <g transform="translate(10,10)">
+      <rect width="150" height="150" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="10" y="22" font-size="12" font-weight="bold" fill="#0969da">① 活緊 etcd</text>
+      <text x="10" y="42" font-size="11" fill="#333">/var/lib/etcd</text>
+      <text x="10" y="58" font-size="11" fill="#333">static pod 運行中</text>
+      <text x="10" y="78" font-size="11" fill="#666">❤️ 心跳正常</text>
+      <text x="10" y="96" font-size="11" fill="#666">keys 照寫入</text>
+      <text x="10" y="118" font-size="11" fill="#666">manifest 在位</text>
+      <text x="10" y="136" font-size="11" fill="#666">etcd.yaml ✔</text>
+    </g>
+    <!-- panel 2 -->
+    <g transform="translate(172,10)">
+      <rect width="150" height="150" rx="6" fill="#ffffff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="10" y="22" font-size="12" font-weight="bold" fill="#1a7f37">② save .db</text>
+      <text x="10" y="42" font-size="11" fill="#333">snapshot save</text>
+      <text x="10" y="58" font-size="11" fill="#333">/backup/*.db 吐出</text>
+      <text x="10" y="78" font-size="11" fill="#666">＋ status 驗貨 ✔</text>
+      <text x="10" y="96" font-size="11" fill="#666">唔使停機</text>
+      <text x="10" y="118" font-size="11" fill="#666">REVISION／KEYS</text>
+      <text x="10" y="136" font-size="11" fill="#666">啱數先走得</text>
+    </g>
+    <!-- panel 3 -->
+    <g transform="translate(334,10)">
+      <rect width="150" height="150" rx="6" fill="#fff8c5" stroke="#bf8700" stroke-width="2"/>
+      <text x="10" y="22" font-size="12" font-weight="bold" fill="#7d4e00">③ 搬走 yaml</text>
+      <text x="10" y="42" font-size="11" fill="#333">mv etcd.yaml /root/</text>
+      <text x="10" y="58" font-size="11" fill="#333">kubelet 見唔到檔</text>
+      <text x="10" y="78" font-size="11" fill="#cf222e">✕ 殺掉 etcd 容器</text>
+      <text x="10" y="96" font-size="11" fill="#666">crictl 睇唔到</text>
+      <text x="10" y="118" font-size="11" fill="#666">先可以換腦</text>
+      <text x="10" y="136" font-size="11" fill="#666">唔停機換唔到</text>
+    </g>
+    <!-- panel 4 -->
+    <g transform="translate(496,10)">
+      <rect width="150" height="150" rx="6" fill="#ffffff" stroke="#8250df" stroke-width="2"/>
+      <text x="10" y="22" font-size="12" font-weight="bold" fill="#8250df">④ 換腦手術</text>
+      <text x="10" y="42" font-size="11" fill="#333">mv etcd → .bak</text>
+      <text x="10" y="58" font-size="11" fill="#333">mv from-backup</text>
+      <text x="10" y="74" font-size="11" fill="#333">→ etcd</text>
+      <text x="10" y="94" font-size="11" fill="#666">restore 早已吐出</text>
+      <text x="10" y="112" font-size="11" fill="#666">新 member 目錄</text>
+      <text x="10" y="136" font-size="11" fill="#666">舊嘅留 .bak 旁邊</text>
+    </g>
+    <!-- panel 5 -->
+    <g transform="translate(658,10)">
+      <rect width="150" height="150" rx="6" fill="#ddf4ff" stroke="#0969da" stroke-width="2"/>
+      <text x="10" y="22" font-size="12" font-weight="bold" fill="#0969da">⑤ 搬返重啟</text>
+      <text x="10" y="42" font-size="11" fill="#333">mv yaml 返去</text>
+      <text x="10" y="58" font-size="11" fill="#333">manifests/</text>
+      <text x="10" y="78" font-size="11" fill="#666">kubelet 拉返起</text>
+      <text x="10" y="96" font-size="11" fill="#1a7f37">✔ get nodes Ready</text>
+      <text x="10" y="118" font-size="11" fill="#666">讀緊新目錄</text>
+      <text x="10" y="136" font-size="11" fill="#666">手術完成</text>
+    </g>
+    <!-- arrows between panels -->
+    <path d="M 160 85 L 172 85" stroke="#0969da" stroke-width="3"/>
+    <polygon points="172,85 164,80 164,90" fill="#0969da"/>
+    <path d="M 322 85 L 334 85" stroke="#1a7f37" stroke-width="3"/>
+    <polygon points="334,85 326,80 326,90" fill="#1a7f37"/>
+    <path d="M 484 85 L 496 85" stroke="#bf8700" stroke-width="3"/>
+    <polygon points="496,85 488,80 488,90" fill="#bf8700"/>
+    <path d="M 646 85 L 658 85" stroke="#8250df" stroke-width="3"/>
+    <polygon points="658,85 650,80 650,90" fill="#8250df"/>
+    <!-- timeline -->
+    <g transform="translate(10,180)">
+      <rect width="798" height="110" rx="6" fill="#f8fafc" stroke="#595f69" stroke-width="1.5"/>
+      <line x1="20" y1="60" x2="778" y2="60" stroke="#0969da" stroke-width="3"/>
+      <circle cx="80" cy="60" r="10" fill="#1a7f37"/>
+      <text x="80" y="64" font-size="10" text-anchor="middle" fill="#fff" font-weight="bold">t0</text>
+      <text x="40" y="30" font-size="12" font-weight="bold" fill="#1a7f37">t0 backup</text>
+      <text x="20" y="90" font-size="11" fill="#333">save＋status：還原點鎖死呢刻</text>
+      <circle cx="400" cy="60" r="10" fill="#bf8700"/>
+      <text x="400" y="64" font-size="10" text-anchor="middle" fill="#fff" font-weight="bold">t1</text>
+      <text x="350" y="30" font-size="12" font-weight="bold" fill="#7d4e00">t1 新 Deployment</text>
+      <text x="320" y="90" font-size="11" fill="#333">backup-me／hello-backup 起咗</text>
+      <circle cx="710" cy="60" r="10" fill="#cf222e"/>
+      <text x="710" y="64" font-size="10" text-anchor="middle" fill="#fff" font-weight="bold">t2</text>
+      <text x="665" y="30" font-size="12" font-weight="bold" fill="#cf222e">t2 restore</text>
+      <text x="600" y="90" font-size="11" fill="#cf222e">t1 嘅嘢全部唔見 ✕（正常！）</text>
+    </g>
+    <text x="10" y="320" font-size="12" font-weight="bold" fill="#0969da">節奏：存 → 驗 → 還原出新目錄 → 搬走 yaml 停 etcd → 換目錄 → 放返 yaml 重啟</text>
+    <text x="10" y="340" font-size="11" fill="#595f69">restore 從來唔係「整返舊嗰個」，而係「換個新嘅上嚟」——還原點＝snapshot 嗰一刻，之後嘅嘢會唔見。</text>
+    <text x="10" y="360" font-size="11" fill="#595f69">考試唔會叫你喺 kind 度換目錄，真手術留返 Killercoda VM；kind 只練 save＋status＋restore 去 /tmp。</text>
+  </svg>
+  <p>記住個節奏：<strong>存 → 驗 → 還原出新目錄 → 換目錄重啟</strong>。restore 從來唔係「整返舊嗰個」，而係「換個新嘅上嚟」。</p>
+</div>
+
+<table>
+  <thead>
+    <tr><th>憑證／參數</th><th>係咩</th><th>港式記法</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>ca.crt</code></td><td>簽發晒所有 etcd 憑證嘅 CA</td><td>👩 阿媽：認人靠佢個印</td></tr>
+    <tr><td><code>server.crt／server.key</code></td><td>etcd 自己出示嘅身份證＋鎖匙</td><td>🪪 我係邊個：保安要睇你證件</td></tr>
+    <tr><td><code>--endpoints=https://127.0.0.1:2379</code></td><td>本機 etcd 聽嘅位</td><td>🏠 門牌：唔寫就搵唔到門口</td></tr>
+    <tr><td><code>ETCDCTL_API=3</code></td><td>強制行 v3 API</td><td>🗣️ 講新話：唔加可能雞同鴨講</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th></th><th>本機 kind（實作 A）</th><th>Killercoda VM（實作 B／考試）</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>etcd 喺邊</strong></td><td>節點容器入面嘅 static pod（etcd-kind-control-plane）</td><td>VM 本機嘅 static pod（etcd-&lt;hostname&gt;）</td></tr>
+    <tr><td><strong>etcdctl 點行</strong></td><td><code>kubectl exec … -- sh -c '…'</code> 包住行</td><td>VM 上直接行（若無 etcdctl 就一樣用 exec 包）</td></tr>
+    <tr><td><strong>練到邊</strong></td><td>save＋status＋restore 去 /tmp（唔郁真數據）</td><td>成套換目錄手術（搬 yaml → 換腦 → 搬返）</td></tr>
+  </tbody>
+</table>
+
+<h2>2. 實作 A：喺本機 kind 叢集存一份 snapshot</h2>
+<p>kind 嘅 etcd 係跑喺 control-plane 節點上嘅 static pod（個名叫 <code>etcd-kind-control-plane</code>）。我哋喺 pod 入面行 etcdctl，再將個檔拷出嚟。先整啲「值得備份嘅狀態」：</p>
+
+<div class="terminal box">
+  <div class="box-title">先做啲嘢，等 snapshot 有內容</div>
+  <pre><span class="comment"># 1. 求其起個 namespace 當「要被備份嘅狀態」</span>
+<span class="prompt">kubectl create ns backup-me</span>
+<span class="prompt">kubectl create deployment hello-backup --image=nginx:1.25 --replicas=2</span>
+<span class="prompt">kubectl rollout status deployment/hello-backup</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">搵到 etcd pod，執行 snapshot save</div>
+  <pre><span class="comment"># 2. etcd static pod 嘅名 = etcd-&lt;節點名&gt;</span>
+<span class="prompt">kubectl get pods -n kube-system | grep etcd</span>
+<span class="comment">#    etcd-kind-control-plane</span>
+
+<span class="comment"># 3. 喺 pod 內執行 etcdctl snapshot save（三憑證 + 本機端點）
+#    檔案要寫入 /var/lib/etcd（呢個係 hostPath，節點容器先讀到、docker cp 先拷得出）</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- sh -c 'ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key snapshot save /var/lib/etcd/etcd-snapshot.db'</span>
+<span class="comment">#    成功會印 "Snapshot saved at /var/lib/etcd/etcd-snapshot.db"</span>
+
+<span class="comment"># 4. 確認檔案存在同大細</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- ls -lh /var/lib/etcd/etcd-snapshot.db</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">拷去 host、用 snapshot status 驗證</div>
+  <pre><span class="comment"># 5. 由節點容器拷返 WSL2 host（docker 對 kind 節點直接用；路徑喺 hostPath 入面先拷到）</span>
+<span class="prompt">docker cp kind-control-plane:/var/lib/etcd/etcd-snapshot.db ./etcd-snapshot.db</span>
+<span class="prompt">ls -lh etcd-snapshot.db</span>
+
+<span class="comment"># 6. 喺 pod 內驗證 snapshot 讀到（存完一定要驗——爛檔冇人想還原嗰陣先發現）</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- sh -c 'ETCDCTL_API=3 etcdctl snapshot status /var/lib/etcd/etcd-snapshot.db --write-out=table'</span>
+<span class="comment">#    table 會印 HASH / REVISION / TOTAL KEYS / TOTAL SIZE</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">預演 restore：還原去一個暫存目錄（唔郁正式數據）</div>
+  <pre><span class="comment"># 7. 將 snapshot 還原成「新數據目錄」去 /tmp——證明呢份備份還原得到</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- sh -c 'ETCDCTL_API=3 etcdctl snapshot restore /var/lib/etcd/etcd-snapshot.db --data-dir=/tmp/restored-etcd'</span>
+<span class="comment">#    成功會印 "Restored a new etcd database..."</span>
+
+<span class="comment"># 8. 睇下還原出嚟嘅目錄結構（member/ 就係 etcd 嘅文件夾）</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- ls /tmp/restored-etcd</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- ls /tmp/restored-etcd/member</span>
+
+<span class="comment"># 9. 收走暫存同 snapshot（備份檔 host 上留返）</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- rm -rf /tmp/restored-etcd /var/lib/etcd/etcd-snapshot.db</span>
+<span class="prompt">kubectl delete ns backup-me</span>
+<span class="prompt">kubectl delete deployment hello-backup</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 6 步嘅 table 係「備份品質保證」：REVISION 代表 etcd 寫到邊一版、TOTAL KEYS 係 key 總數。第 7–8 步先睇明 restore 本質：<strong>佢將 snapshot「吐」成一個新嘅數據目錄</strong>（含 member 子目錄），唔會郁你跑緊嘅 etcd。真正切換只係將 etcd 指去新目錄再重啟——下面實作 B 就係嗰台手術。</p>
+</div>
+
+<h2>3. 實作 B：完整還原手術（喺 Killercoda VM 上演練）</h2>
+<p>本機 kind 嘅 etcd 同正式叢集生得唔同（manifest、kubelet 都喺節點容器入面），真正嘅還原手術要喺<strong>VM 型叢集</strong>上做先有意思——考試環境都係 VM。開個 Killercoda 嘅 kubeadm／多節點場景，將下面成套跑一次（約 15 分鐘）。</p>
+
+<div class="terminal box">
+  <div class="box-title">完整還原流程（VM 版；只可意會不可省略）</div>
+  <pre><span class="comment"># step 0 — 開 Killercoda（killercoda.com），揀個「kubeadm、含 control-plane」嘅場景
+#    下面假設你喺嗰部 VM 嘅 root／sudo 環境</span>
+
+<span class="comment"># step 1 — （第一次練習先）存一份而家狀態嘅備份
+#    若 VM 嘅 host 冇裝 etcdctl（kubeadm 唔保證會裝）：將下面每行 etcdctl
+#    包成 kubectl -n kube-system exec -it etcd-$(hostname) -- sh -c '…' 喺 pod 內跑，
+#    憑證路徑同指令內容完全一樣——本課實作 A 就係咁做</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key snapshot save /root/etcd-snapshot.db</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl snapshot status /root/etcd-snapshot.db --write-out=table</span>
+
+<span class="comment"># step 2 — 還原成新數據目錄（唔好擺喺舊嘅 /var/lib/etcd 上）</span>
+<span class="prompt">ETCDCTL_API=3 etcdctl snapshot restore /root/etcd-snapshot.db --data-dir=/var/lib/etcd-from-backup</span>
+
+<span class="comment"># step 3 — 停咗 etcd static pod：將 manifest 搬走，kubelet 就會收走 etcd</span>
+<span class="prompt">mv /etc/kubernetes/manifests/etcd.yaml /root/</span>
+<span class="prompt">crictl ps | grep etcd || docker ps | grep etcd</span>
+<span class="comment">#    等到輸出睇唔到 etcd 容器為止（kubelet 幾秒內收走）</span>
+
+<span class="comment"># step 4 — 備份舊數據目錄、將還原出嚟嘅換上去</span>
+<span class="prompt">mv /var/lib/etcd /var/lib/etcd.bak</span>
+<span class="prompt">mv /var/lib/etcd-from-backup /var/lib/etcd</span>
+
+<span class="comment"># step 5 — 放返 manifest，等 kubelet 重新拉起 etcd（呢刻佢讀嘅係新數據目錄）</span>
+<span class="prompt">mv /root/etcd.yaml /etc/kubernetes/manifests/</span>
+<span class="prompt">crictl ps | grep etcd</span>
+<span class="prompt">sleep 10</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pods -A</span>
+<span class="comment">#    節點 Ready、控制平面元件返嚟，即係還原成功</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">還原後一定會唔見咗啲狀態——呢個唔係 bug</div>
+  <p>還原即係返去 snapshot 嗰一刻：snapshot 之後先起嘅物件全部消失（step 1 存檔之後嘅操作都會唔見）。呢個正正係備份嘅意思：<strong>時間點 = 還原點</strong>。另外 restore 會換咗 etcd 嘅 member ID，所以「將還原後嘅節點重新加入叢集」喺 HA 環境要小心——考試只考單一 control-plane 或者跟題目指令行就得。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 三指令：<code>snapshot save</code>（三憑證+endpoints 模板）／<code>snapshot status</code>（驗）／<code>snapshot restore --data-dir=...</code>（還原成新目錄）。② 必背路徑：<code>/etc/kubernetes/manifests/etcd.yaml</code>、<code>/var/lib/etcd</code>、憑證喺 <code>/etc/kubernetes/pki/etcd/</code>。③ restore 係「<strong>新數據目錄駁返</strong>」唔係原地復活——先停 static pod（搬 manifest）、換目錄、再放返 manifest。④ 還原點＝snapshot 時間點，之後嘅狀態會消失。⑤ 題目若畀 member 多嘅叢集，restore 通常只對單一 member 做、再將其他 member 清走重建。⑥ 指令前 <code>ETCDCTL_API=3</code> 照抄。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你喺本機 kind 叢集對「生緊嘅 etcd」做咗 snapshot save，仲用 snapshot status 驗過。</li>
+  <li>你將備份檔拷出節點，仲預演 restore（還原去暫存目錄）證明還原到。</li>
+  <li>你明晒完整還原手術每一步，識得喺 Killercoda VM 上照表操課。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">etcd snapshot restore 做完之後，得到嘅係？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">原地整返好舊目錄</button>
+    <button class="quiz-opt">新嘅數據目錄</button>
+    <button class="quiz-opt">一個新備份檔</button>
+    <button class="quiz-opt">一粒新節點呀</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">備份完之後應該即刻做邊件事？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">snapshot status 驗證</button>
+    <button class="quiz-opt">刪走個備份檔</button>
+    <button class="quiz-opt">重啟 etcd 服務</button>
+    <button class="quiz-opt">重開成個叢集</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">要暫停 etcd static pod，考試標準做法係？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kubectl delete pod</button>
+    <button class="quiz-opt">systemctl stop etcd</button>
+    <button class="quiz-opt">搬走 manifest 檔</button>
+    <button class="quiz-opt">直接 docker 殺死</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>備份還原識咗，即係你開始「管理」叢集。下一課將成個控制平面由零起一次：<a href="../reference/glossary.html">kubeadm</a> init／join（Killercoda 拋棄式 VM，唔郁本機 Calico 叢集）——將 0001 嘅控制平面元件圖由「睇過」變成「親手裝過」。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/">Operating etcd clusters for Kubernetes（官方文件）</a>同<a href="https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/#backing-up-an-etcd-cluster">Backing up an etcd cluster</a> —— 本課嘅權威版。將「Backing up」同「Restoring an etcd cluster」兩節逐字讀一次，約 15 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0013-rbac-serviceaccount.html">← 上一課：RBAC</a>
+  <a href="0015-kubeadm-cluster-setup.html">下一課：kubeadm 起叢集 ➔</a>
+</div>
+</div>
+</body>
+</html>

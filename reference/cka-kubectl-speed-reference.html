@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <title>CKA 考場搶分神技：kubectl 盲打與極速排錯速查表</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.95rem; }
+    th, td { border: 1px solid var(--border); padding: 0.6rem 0.8rem; text-align: left; }
+    th { background: var(--code-bg); font-weight: 600; }
+    .key-cmd { font-weight: bold; color: #0969da; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <header class="lesson-header">
+    <span class="badge">Cheat Sheet / Reference · Lesson 0002</span>
+    <h1>CKA 考場搶分神技：kubectl 盲打與極速排錯速查表</h1>
+    <p>CKA 考試 2 個鐘做 17 題，每一題都係實戰。手寫 YAML 絕對係死路一條！呢份 Cheatsheet 教你點樣用 <code>--dry-run=client -o yaml</code> 配合萬能 Alias，5 秒鐘生出乾淨 YAML！</p>
+  </header>
+
+  <h2>1. 考場必設 3 大神級 Alias (開考首 60 秒做)</h2>
+  <pre><code># 1. 縮寫 kubectl 變成 k
+alias k=kubectl
+
+# 2. 自動補全 (Auto-completion)，按 Tab 鍵補全 resource 與 pod 名字
+source <(kubectl completion bash)
+complete -o default -F __start_kubectl k
+
+# 3. 5 秒生成 YAML 模板神器
+export do="--dry-run=client -o yaml"
+
+# 4. 強制秒殺 Pod (唔洗等 30 秒 graceful shutdown)
+export now="--force --grace-period=0"</code></pre>
+
+  <h2>2. 5 秒 Imperative 指令生 YAML 對照表</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>目標資源</th>
+        <th>極速 Imperative 指令 (配合 $do)</th>
+        <th>產出重點</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Pod</strong></td>
+        <td><code>k run my-pod --image=nginx $do > pod.yaml</code></td>
+        <td>最純淨嘅單個 Pod 結構</td>
+      </tr>
+      <tr>
+        <td><strong>Pod (帶 Port/Env)</strong></td>
+        <td><code>k run my-pod --image=nginx --port=80 --env="ENV=prod" $do > pod.yaml</code></td>
+        <td>自動填好 ports 同 env block</td>
+      </tr>
+      <tr>
+        <td><strong>Deployment</strong></td>
+        <td><code>k create deploy my-dep --image=nginx --replicas=3 $do > dep.yaml</code></td>
+        <td>包裝好 spec.template 同 matchLabels</td>
+      </tr>
+      <tr>
+        <td><strong>Service (ClusterIP)</strong></td>
+        <td><code>k expose pod my-pod --port=80 --target-port=80 $do > svc.yaml</code></td>
+        <td>自動綁定 Pod 嘅 labels 做 selector</td>
+      </tr>
+      <tr>
+        <td><strong>Service (NodePort)</strong></td>
+        <td><code>k create svc nodeport my-svc --tcp=80:80 $do > svc.yaml</code></td>
+        <td>自動設定 NodePort 類型</td>
+      </tr>
+      <tr>
+        <td><strong>Namespace</strong></td>
+        <td><code>k create ns test-ns $do > ns.yaml</code></td>
+        <td>極速生成 namespace definition</td>
+      </tr>
+      <tr>
+        <td><strong>ConfigMap</strong></td>
+        <td><code>k create cm app-config --from-literal=APP_MODE=prod $do > cm.yaml</code></td>
+        <td>免手寫 Key-Value</td>
+      </tr>
+      <tr>
+        <td><strong>Secret</strong></td>
+        <td><code>k create secret generic app-secret --from-literal=dbpass=p@ss123 $do > sec.yaml</code></td>
+        <td>自動轉成 Base64</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>3. CKA 排錯 4 部曲 (救命順序)</h2>
+  <ol>
+    <li><code>k get pods -A -o wide</code> ➜ 睇邊個 Pod status 有古怪，同埋佢分配喺邊粒 Node。</li>
+    <li><code>k describe pod &lt;pod-name&gt;</code> ➜ 碌到最底睇 <strong>Events:</strong>（90% 嘅報錯如 ImagePullBackOff、OOMKilled、FailedScheduling 都喺度寫得一清二楚）。</li>
+    <li><code>k logs &lt;pod-name&gt; [-c container-name] [--previous]</code> ➜ 睇 Container 崩潰時吐出嘅 stderr/stdout。加 <code>--previous</code> 可以睇上一次死咗嗰個 Container 嘅遺言！</li>
+    <li><code>k exec -it &lt;pod-name&gt; -- sh</code> (或 <code>bash</code>) ➜ 入容器內部做 <code>curl</code> 或網絡偵測。</li>
+  </ol>
+
+  <div class="lesson-nav">
+    <a href="../lessons/0002-imperative-kubectl-and-hands-on-lab.html">← 前往第 0002 課實戰教材</a>
+    <a href="../lessons/0001-k8s-architecture-mental-model.html">第 0001 課：核心架構</a>
+  </div>
+</div>
+</body>
+</html>

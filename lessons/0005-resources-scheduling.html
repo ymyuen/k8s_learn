@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0005 — 資源與排程：requests/limits、Taints 與 Affinity</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 1 · 對應考綱：<a href="../reference/cka-domain-map.html">Workloads &amp; Scheduling（15%）</a> · 需時約 35 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第五課 · 資源與排程</span>
+  <h1>Lesson 0005：資源與排程 requests/limits、Taints 與 Affinity</h1>
+  <p><strong>目標：</strong>0004 話四種控制器儲齊，Phase 1 爭最後一塊拼圖。今課一次過搞掂三樣嘢：<strong>Pod 嘅資源底價同上限（requests／limits）、Node 嘅污點同容忍（taint／toleration）、仲有親和性調度（affinity）</strong>——全部都係「Pod 排唔上」考題嘅核心。</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解排程咁緊要？</strong><br>
+  考場成日出「Pod 卡喺 Pending，點解上唔到車？」——唔係唔夠位（requests 爆咗），就係畀 Node 拒絕（taint 未忍），或者你釘錯位（affinity 寫錯）。呢課就係教你睇 <code>describe node</code> 條數、睇 <code>describe pod</code> 嘅 Events，一眼搵到瀨嘢位，貼地到考試即用！
+</div>
+
+<div class="diagram-card">
+  <h3>⚖️ 排程三關：夠位 → 畀入 → 啱位</h3>
+  <svg viewBox="0 0 760 230" xmlns="http://www.w3.org/2000/svg" style="width:100%;background:#f8fafc;border-radius:8px;">
+    <g>
+      <rect x="15" y="40" width="220" height="130" rx="8" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="30" y="68" font-size="13" font-weight="bold" fill="#0969da">1. 夠位？requests</text>
+      <text x="30" y="92" font-size="12" fill="#333">Node A：剩 500m / 1Gi</text>
+      <text x="30" y="112" font-size="12" fill="#333">Node B：剩 50m / 64Mi</text>
+      <text x="30" y="134" font-size="11" fill="#666">scheduler 只計 requests</text>
+      <text x="30" y="152" font-size="11" fill="#666">唔夠位 → Pending</text>
+    </g>
+    <g>
+      <text x="245" y="110" font-size="18" fill="#0969da">→</text>
+    </g>
+    <g>
+      <rect x="270" y="40" width="220" height="130" rx="8" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="285" y="68" font-size="13" font-weight="bold" fill="#1a7f37">2. 畀入？taint</text>
+      <text x="285" y="92" font-size="12" fill="#333">control-plane：有污點</text>
+      <text x="285" y="112" font-size="12" fill="#333">冇 toleration → 唔入得</text>
+      <text x="285" y="134" font-size="11" fill="#666">NoSchedule 擋新 Pod</text>
+      <text x="285" y="152" font-size="11" fill="#666">NoExecute 連舊都趕走</text>
+    </g>
+    <g>
+      <text x="500" y="110" font-size="18" fill="#1a7f37">→</text>
+    </g>
+    <g>
+      <rect x="525" y="40" width="220" height="130" rx="8" fill="#fff" stroke="#cf222e" stroke-width="2"/>
+      <text x="540" y="68" font-size="13" font-weight="bold" fill="#cf222e">3. 啱位？affinity</text>
+      <text x="540" y="92" font-size="12" fill="#333">nodeSelector：disk=fast</text>
+      <text x="540" y="112" font-size="12" fill="#333">affinity：In / NotIn</text>
+      <text x="540" y="134" font-size="11" fill="#666">硬性唔啱 → Pending</text>
+      <text x="540" y="152" font-size="11" fill="#666">軟性只係「盡量」</text>
+    </g>
+    <text x="15" y="195" font-size="12" fill="#333">睇下排錯次序：describe pod 睇原因（FailedScheduling）→ describe node 睇條數（Allocated resources）。</text>
+  </svg>
+  <p>記住呢三關，Pod 排唔上就唔會估估下，一步步對就搵到原因。</p>
+</div>
+
+<div class="warn box">
+  <div class="box-title">本課起：環境切到 WSL2 終端機（一次性）</div>
+  <p>由今課開始，所有 terminal 實作一律喺 <strong>WSL2 嘅 bash</strong> 做——CKA 考試就係 Linux terminal，愈早練熟肌肉記憶愈好。Windows PowerShell 嗰套（含 <code>Out-File</code>）由呢刻退役。第一件事：喺 WSL2 入面檢查兼補齊 kubectl 同 kind，再將叢集起返雙節點（0004 個叢集係 Windows 起嘅，直接換走）。重建約需 2 分鐘。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">WSL2 起手式：檢查三件套、缺誰裝誰</div>
+  <pre><span class="comment"># 1. 開一個 WSL2 終端（Ubuntu），依序檢查——三個都要「找得到」且印得出版本</span>
+<span class="prompt">docker version</span>
+<span class="prompt">kind version</span>
+<span class="prompt">kubectl version --client</span>
+<span class="comment">#    docker 連不上時：Docker Desktop → Settings → Resources → WSL Integration
+#    → 勾選你的發行版（本課假設你已勾過）</span>
+
+<span class="comment"># 2. 缺 kind 才裝（二進位放 /usr/local/bin；想用更新版以 kind release 為準）</span>
+<span class="prompt">curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64</span>
+<span class="prompt">chmod +x ./kind</span>
+<span class="prompt">sudo mv ./kind /usr/local/bin/kind</span>
+
+<span class="comment"># 3. 缺 kubectl 才裝（官方「Install kubectl on Linux」頁面同款寫法）</span>
+<span class="prompt">curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"</span>
+<span class="prompt">sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">在 WSL2 內重建雙節點叢集</div>
+  <pre><span class="comment"># 4. 建工作目錄，之後的 YAML 檔都放這裡（bash 沒有 Windows 的 UTF-16 陷阱）</span>
+<span class="prompt">mkdir -p ~/practice</span>
+<span class="prompt">cd ~/practice</span>
+
+<span class="comment"># 5. 刪掉 Windows 時期建的舊叢集（kind 透過 Docker 管叢集，兩邊共用同一引擎）</span>
+<span class="prompt">kind delete cluster</span>
+
+<span class="comment"># 6. 用 nano 建立雙節點設定檔（貼上下面內容；存檔 Ctrl+O → Enter；離開 Ctrl+X）</span>
+<span class="prompt">nano kind-config.yaml</span>
+
+<span class="comment"># 內容——與 0001 選配、0004 用過的同一份雙節點設定：</span>
+<span class="prompt">kind: Cluster</span>
+<span class="prompt">apiVersion: kind.x-k8s.io/v1alpha4</span>
+<span class="prompt">nodes:</span>
+<span class="prompt">- role: control-plane</span>
+<span class="prompt">- role: worker</span>
+
+<span class="comment"># 7. 重建（約 2 分鐘），kind 會自動把 kubeconfig 寫進 WSL2 的家目錄</span>
+<span class="prompt">kind create cluster --config kind-config.yaml</span>
+
+<span class="comment"># 8. 驗收：兩台 Ready；context 叫 kind-kind</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl config current-context</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>由而家起 <code>kubectl</code> 讀嘅係 <code>~/.kube/config</code>（WSL2 入面嗰份）。Windows PowerShell 嘅舊 kubeconfig 正式退休——今課之後所有指令都以呢個 WSL2 terminal 為準。如果 <code>kubectl get nodes</code> 得一台，返去睇下第 6 步個檔係咪 save 錯名或者貼漏嘢。</p>
+</div>
+
+<h2>1. requests 同 limits：Pod 嘅「底價」同「上限」</h2>
+<p>Pod 可以宣告兩種資源（CPU、memory）嘅兩組數。呢四個欄位就係排程同運行嘅關鍵，睇下呢張表就搞掂：</p>
+
+<table>
+  <thead>
+    <tr><th></th><th>requests（請求）</th><th>limits（上限）</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>作用時機</strong></td><td>排程時（scheduler 找節點）</td><td>運行時（kubelet 強制執行）</td></tr>
+    <tr><td><strong>意義</strong></td><td>「我至少要這麼多」——保證額度</td><td>「我最多用這麼多」——使用天花板</td></tr>
+    <tr><td><strong>CPU 超過會怎樣</strong></td><td>—</td><td>被節流（throttle），變慢但不會死</td></tr>
+    <tr><td><strong>Memory 超過會怎樣</strong></td><td>—</td><td><strong>OOMKilled</strong>，容器被殺掉重啟</td></tr>
+  </tbody>
+</table>
+
+<p>CPU 單位：<code>1</code>＝一粒完整核心，細數或者毫核 <code>100m</code>＝0.1 核。Memory 單位：<code>128Mi</code>（mebibytes，2 嘅次方）或者 <code>1Gi</code>；考場最常見 Mi/Gi。Scheduler 揀 Node 嗰陣<strong>淨係計 requests</strong>：佢將每台 Node 上面所有 Pod 嘅 requests 加總，<code>describe node</code> 嘅「Allocated resources」就係呢本數簿。想查術語可睇 <a href="../reference/glossary.html">詞彙表 QoS</a>。</p>
+
+<h2>2. QoS：冇寫 requests 嘅 Pod 排最尾</h2>
+<p>三個欄位冇寫齊，Pod 會畀人分入三種 <a href="../reference/glossary.html">QoS（服務品質）</a>等級之一，OOM 要殺人嗰陣就按等級嚟：</p>
+<ul>
+  <li><strong>Guaranteed</strong>：每粒 container 都寫咗 requests，而且 requests ＝ limits（CPU 同 memory 都係）。優先級最高，最難畀 OOM 斬。</li>
+  <li><strong>Burstable</strong>：至少一粒 container 有 requests，但唔等於 limits（最常見）。</li>
+  <li><strong>BestEffort</strong>：任何 container 都冇寫 requests／limits。唔夠資源嗰陣<strong>第一個畀人斬</strong>。</li>
+</ul>
+<p>秒判法：<strong>「有冇寫」→「等唔相等」</strong>。全部冇寫＝BestEffort；有寫兼全等＝Guaranteed；其他＝Burstable。</p>
+
+<table>
+  <thead>
+    <tr><th></th><th>requests（訂位）</th><th>limits（食量上限）</th><th>真實用量（實際食幾多）</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>邊個話事</strong></td><td>你寫喺 YAML，scheduler 用嚟揀位</td><td>你寫喺 YAML，kubelet 用嚟執法</td><td>container 實際用幾多，metrics-server 先知</td></tr>
+    <tr><td><strong>CPU 爆咗</strong></td><td>唔夠位就 Pending，排唔到</td><td>被 throttle（限速變慢，唔會死）</td><td>用多過 limit 就畀人限速，似水喉收細</td></tr>
+    <tr><td><strong>Memory 爆咗</strong></td><td>唔夠位就 Pending，排唔到</td><td><strong>OOMKilled</strong>（直接斬咗個 container 再重啟）</td><td>用多過 limit 即畀 kubelet 斬，似食自助餐食爆要離場</td></tr>
+  </tbody>
+</table>
+
+<div class="diagram-card">
+  <h3>🪜 QoS 天梯：邊個先畀 OOM 斬？</h3>
+  <svg viewBox="0 0 760 130" xmlns="http://www.w3.org/2000/svg" style="width:100%;background:#f8fafc;border-radius:8px;">
+    <g font-family="-apple-system, sans-serif">
+      <rect x="15" y="25" width="220" height="70" rx="8" fill="#ffebe9" stroke="#cf222e" stroke-width="2"/>
+      <text x="30" y="50" font-size="13" font-weight="bold" fill="#cf222e">BestEffort：最先斬</text>
+      <text x="30" y="70" font-size="11" fill="#333">咩都冇寫，冇訂位</text>
+      <text x="30" y="86" font-size="11" fill="#666">🥇 第一位離場</text>
+      <text x="245" y="65" font-size="20" fill="#cf222e">→</text>
+      <rect x="275" y="25" width="220" height="70" rx="8" fill="#fff6e5" stroke="#bf8700" stroke-width="2"/>
+      <text x="290" y="50" font-size="13" font-weight="bold" fill="#7d4e00">Burstable：中間</text>
+      <text x="290" y="70" font-size="11" fill="#333">有寫但唔等，最常見</text>
+      <text x="290" y="86" font-size="11" fill="#666">🥈 第二位離場</text>
+      <text x="505" y="65" font-size="20" fill="#1a7f37">→</text>
+      <rect x="535" y="25" width="210" height="70" rx="8" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+      <text x="550" y="50" font-size="13" font-weight="bold" fill="#1a7f37">Guaranteed：最硬淨</text>
+      <text x="550" y="70" font-size="11" fill="#333">全寫兼 requests＝limits</text>
+      <text x="550" y="86" font-size="11" fill="#666">🥉 最後先郁佢</text>
+    </g>
+  </svg>
+  <p>記法：訂位都冇嗰個（BestEffort）OOM 一嚟第一個畀人斬；訂咗位又唔食過龍嗰個（Guaranteed）留到最後。CPU 爆只係慢（throttle），Memory 爆先會死（OOMKilled）——呢句係選擇題熱門。</p>
+</div>
+
+<h2>3. 實作 A：帶資源嘅 Deployment 同 QoS 觀察</h2>
+<p>叢集雙節點已經 ready。用 0004 練過嘅 dry-run 工作法，吐個帶 <code>resources</code> 嘅 Deployment：</p>
+
+<div class="terminal box">
+  <div class="box-title">建帶資源需求的 Deployment（Burstable 版）</div>
+  <pre><span class="comment"># 9. dry-run 產出 Deployment YAML 存檔（bash 直接 &gt; 就是純文字）</span>
+<span class="prompt">kubectl create deployment resource-demo --image=nginx:1.25 --replicas=2 --dry-run=client -o yaml > deploy.yaml</span>
+
+<span class="comment"># 10. nano 打開，在 containers[0] 的 image 下面補 resources 段（縮排 8 格起）</span>
+<span class="prompt">nano deploy.yaml</span>
+<span class="comment">#    spec.template.spec.containers[0] 內加：
+#      resources:
+#        requests:
+#          cpu: 100m
+#          memory: 128Mi
+#        limits:
+#          cpu: 300m
+#          memory: 256Mi
+#    （requests ≠ limits，這是刻意的——等一下會看到 Burstable）</span>
+
+<span class="comment"># 11. 套用並等就緒</span>
+<span class="prompt">kubectl apply -f deploy.yaml</span>
+<span class="prompt">kubectl rollout status deployment/resource-demo</span>
+
+<span class="comment"># 12. 用 jsonpath 讀出 Pod 的 QoS 等級</span>
+<span class="prompt">kubectl get pods -l app=resource-demo -o jsonpath='{.items[0].status.qosClass}'</span>
+<span class="comment">#    輸出 Burstable——因為 requests 與 limits 不相等</span>
+
+<span class="comment"># 13. 看節點的資源帳本（Allocated resources 區塊）</span>
+<span class="prompt">kubectl describe node kind-worker</span>
+<span class="comment">#    你會看到兩顆 Pod 各佔 cpu 100m／memory 128Mi 的 requests</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 13 步嘅 <code>describe node</code> 係考場必查頁：<code>Allocated resources</code> 嗰格就係呢台 Node 嘅「資源數簿」——將所有 Pod 嘅 requests（同 limits）分開加總，對返上面嘅 <code>Allocatable</code>，一眼計到「呢台仲塞得落幾大嘅 Pod」。當所有 Node 嘅剩餘額都塞唔落粒新 Pod，佢就會卡喺 <code>Pending</code>，而「排唔到」嘅證據 <strong>FailedScheduling 事件係記喺嗰粒 Pod 身上</strong>（<code>describe pod</code> 嘅 Events 會寫 <code>Insufficient cpu</code>／<code>Insufficient memory</code>），唔係記喺 Node 嘅 Events——查法睇下面個框。第 12 步 QoS 出 <code>Burstable</code>，啱啱好應返口訣：requests ≠ limits。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">「排不下」的長相：節點看帳、Pod 看原因</div>
+  <pre><span class="comment"># describe node 的 Allocated resources（節點的帳本）：</span>
+<span class="comment">#   Resource   Requests        Limits</span>
+<span class="comment">#   cpu        850m (42%)      1500m (75%)</span>
+<span class="comment">#   memory     300Mi (15%)     700Mi (36%)</span>
+<span class="comment">#   → Requests 欄逼近 100% 時，新的 Pod 就塞不進「這台」</span>
+<span class="comment">#
+# 排不上的那顆 Pod（kubectl describe pod 或 get events --sort-by=.lastTimestamp）：</span>
+<span class="comment">#   Warning  FailedScheduling  …</span>
+<span class="comment">#   0/2 nodes are available: 2 Insufficient cpu. preemption: 0 …</span>
+<span class="comment">#   → 「Insufficient cpu / memory」＝把 Pod 的 requests 加進去後超過節點剩餘額度
+#     （訊息也會混進 taint／nodeSelector 的理由，如 0005 實作 B 的 untolerated taint）
+#
+# 兩邊對照的口訣：
+#   describe node → 看帳（每台還剩多少額度）
+#   describe pod（Pending 那顆）→ 看原因（FailedScheduling 明寫哪台缺什麼）
+#   節點自己的 Events 是「節點級」事件（記憶體壓力逐出、條件變化），
+#   資源不足的排程失敗不會出現在這裡——別查錯地方。
+#</span>
+<span class="comment"># 選做：親手做出一次 FailedScheduling（64Gi 的 Pod，任何節點都塞不下）
+#   注意：現代 kubectl 的 run 已不收資源旗標（requests/limits 屬 Pod spec 欄位），用第 9 步同款 dry-run 工作法</span>
+<span class="prompt">kubectl run too-big --image=nginx:1.25 --restart=Never --dry-run=client -o yaml > too-big.yaml</span>
+<span class="prompt">nano too-big.yaml</span>
+<span class="comment">#    把 containers 下的 resources: {} 佔位展開成：
+#      resources:
+#        requests:
+#          memory: 64Gi</span>
+<span class="prompt">kubectl apply -f too-big.yaml</span>
+<span class="prompt">kubectl get pod too-big</span>
+<span class="comment">#   STATUS = Pending</span>
+<span class="prompt">kubectl describe pod too-big | tail -n 8</span>
+<span class="comment">#   Events 出現 FailedScheduling … Insufficient memory</span>
+<span class="prompt">kubectl delete pod too-big</span></pre>
+</div>
+
+<div class="diagram-card">
+  <h3>🗺️ Pending 三岔口：睇完 Pod Events 就知行邊條路</h3>
+  <svg viewBox="0 0 760 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;background:#f8fafc;border-radius:8px;">
+    <g font-family="-apple-system, sans-serif">
+      <rect x="250" y="10" width="260" height="55" rx="8" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="265" y="33" font-size="13" font-weight="bold" fill="#0969da">起點：Pod 卡 Pending？</text>
+      <text x="265" y="52" font-size="11" fill="#333">第一步永遠：describe 嗰粒 Pod 睇 Events</text>
+      <text x="310" y="80" font-size="16" fill="#0969da">▼</text>
+      <rect x="130" y="90" width="500" height="48" rx="8" fill="#fff6e5" stroke="#bf8700" stroke-width="2"/>
+      <text x="145" y="112" font-size="12" fill="#7d4e00">例：0/2 nodes are available: 2 Insufficient cpu, 1 untolerated taint…</text>
+      <text x="145" y="130" font-size="11" fill="#333">「0/2」＝兩台都唔收，後面逐個理由數（成日幾樣撈埋一齊）</text>
+      <text x="200" y="160" font-size="16" fill="#bf8700">▼ 圈住關鍵字，行啱分岔路 ▼</text>
+      <g transform="translate(15, 175)">
+        <rect width="225" height="145" rx="8" fill="#fff" stroke="#0969da" stroke-width="2"/>
+        <text x="12" y="24" font-size="12" font-weight="bold" fill="#0969da">A. 見 Insufficient…？</text>
+        <text x="12" y="45" font-size="11" fill="#333">＝位唔夠（requests 太大）</text>
+        <text x="12" y="63" font-size="11" fill="#333">→ describe node 睇數簿：</text>
+        <text x="12" y="81" font-size="11" fill="#333">Allocated requests 加總</text>
+        <text x="12" y="99" font-size="11" fill="#333">vs Allocatable 剩幾多</text>
+        <text x="12" y="120" font-size="11" fill="#666">例：cpu 850m/1000m，</text>
+        <text x="12" y="136" font-size="11" fill="#666">再加 500m 就爆 → Pending</text>
+      </g>
+      <g transform="translate(267, 175)">
+        <rect width="225" height="145" rx="8" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+        <text x="12" y="24" font-size="12" font-weight="bold" fill="#1a7f37">B. 見 untolerated taint？</text>
+        <text x="12" y="45" font-size="11" fill="#333">＝門口保安唔畀入</text>
+        <text x="12" y="63" font-size="11" fill="#333">→ get nodes 睇 TAINTS：</text>
+        <text x="12" y="81" font-size="11" fill="#333">邊台有污點、咩 effect</text>
+        <text x="12" y="99" font-size="11" fill="#333">→ 對 Pod 有冇 toleration</text>
+        <text x="12" y="120" font-size="11" fill="#666">custom-columns 印</text>
+        <text x="12" y="136" font-size="11" fill="#666">TAINTS＋EFFECT 即見</text>
+      </g>
+      <g transform="translate(519, 175)">
+        <rect width="225" height="145" rx="8" fill="#fff" stroke="#cf222e" stroke-width="2"/>
+        <text x="12" y="24" font-size="12" font-weight="bold" fill="#cf222e">C. 見 nodeSelector／affinity？</text>
+        <text x="12" y="45" font-size="11" fill="#333">＝釘錯位（label 唔夾）</text>
+        <text x="12" y="63" font-size="11" fill="#333">→ get nodes --show-labels：</text>
+        <text x="12" y="81" font-size="11" fill="#333">Node 有冇嗰個 label</text>
+        <text x="12" y="99" font-size="11" fill="#333">→ 對 Pod 寫咩 selector</text>
+        <text x="12" y="120" font-size="11" fill="#666">冇 disk=fast 嘅 Node，</text>
+        <text x="12" y="136" font-size="11" fill="#666">Pod 就無處可去</text>
+      </g>
+    </g>
+  </svg>
+  <p>查案口訣：<strong>Pending 先睇 Pod（Events 圈關鍵字）→ 再睇 Node（數簿／污點／label 三揀一）</strong>。記住個混合例 <code>0/2 nodes are available</code>：前面係總數，後面每個理由都係一條分岔，逐條對就唔會估估下。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">改成 requests = limits，升級成 Guaranteed</div>
+  <pre><span class="comment"># 14. 把 limits 改成與 requests 相同（cpu 300m→100m、memory 256Mi→128Mi）</span>
+<span class="prompt">nano deploy.yaml</span>
+<span class="comment">#     requests 與 limits 都要寫、而且相等，才是 Guaranteed（見下面 warn）</span>
+
+<span class="prompt">kubectl apply -f deploy.yaml</span>
+<span class="prompt">kubectl rollout status deployment/resource-demo</span>
+
+<span class="comment"># 15. 再看 QoS：requests = limits → Guaranteed</span>
+<span class="prompt">kubectl get pods -l app=resource-demo -o jsonpath='{.items[0].status.qosClass}'</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">CKA 陷阱：只寫 requests 唔寫 limits ≠ Guaranteed</div>
+  <p>Guaranteed 條件係「requests <strong>同</strong> limits 都有寫、而且相等」。淨寫 requests、或者兩邊唔等，都只計 Burstable。想快手整粒 Guaranteed，將兩段寫成完全一樣嘅值就得。呢啲係選擇題同 YAML 判讀題嘅熱區，唔好瀨嘢。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾實作 A，順便看 BestEffort 長相</div>
+  <pre><span class="comment"># 16. 刪掉 resource-demo 與它的 YAML</span>
+<span class="prompt">kubectl delete deployment resource-demo</span>
+<span class="prompt">rm deploy.yaml</span>
+
+<span class="comment"># 17. 用 kubectl run 建一顆「什麼資源都沒寫」的 Pod——它是 BestEffort</span>
+<span class="prompt">kubectl run best-effort --image=nginx:1.25</span>
+<span class="prompt">kubectl get pod best-effort -o jsonpath='{.status.qosClass}'</span>
+<span class="comment">#    輸出 BestEffort</span>
+<span class="prompt">kubectl delete pod best-effort</span></pre>
+</div>
+
+<h2>4. Taints 同 Tolerations：邊個唔畀嚟、邊個忍到</h2>
+<p>0001 預告過：正式叢集嘅 control-plane 帶 <code>node-role.kubernetes.io/control-plane:NoSchedule</code> 污點，普通 Pod 上唔到去；kind 起單節點嗰陣幫你拔走咗，所以你先喺 kind-control-plane 跑到 Pod。成個機制拆開兩半睇：</p>
+<ul>
+  <li><strong>Taint</strong> 打喺<strong>Node</strong> 上面，好似貼「本店唔招待」：效果有 <code>NoSchedule</code>（唔排新嘅）、<code>PreferNoSchedule</code>（盡量唔排）、<code>NoExecute</code>（唔排新嘅，<strong>仲將上面啲 Pod 趕走</strong>）。</li>
+  <li><strong>Toleration</strong> 寫喺<strong>Pod</strong> 上面，好似「我有 VIP 卡」：對得上污點嘅 Pod 先畀排上去。口訣：<strong>容忍只係「畀你入」，唔係「 prefer 你入」</strong>——加咗 toleration 唔代表一定會排過去。</li>
+</ul>
+
+<p>Taint 語法：<code>kubectl taint node &lt;節點名&gt; &lt;key&gt;=&lt;value&gt;:&lt;Effect&gt;</code>；拎走嗰陣尾加 <code>-</code>。Toleration 喺 Pod 嘅 <code>spec.tolerations</code>：</p>
+
+<div class="terminal box">
+  <div class="box-title">toleration 的標準 YAML 寫法（對照關係用顏色記）</div>
+  <pre><span class="comment"># taint（節點上）：disk=slow:NoSchedule</span>
+<span class="prompt">tolerations:</span>
+<span class="prompt">- key: disk</span>
+<span class="prompt">  operator: Equal</span>
+<span class="prompt">  value: slow</span>
+<span class="prompt">  effect: NoSchedule</span>
+<span class="comment"># 一一對應：key 相同、operator=Equal + value 相同、effect 相同，
+# 這顆 Pod 才「忍得住」那顆節點上的污點。</span></pre>
+</div>
+
+<h2>5. 實作 B：親眼見 control-plane 污點，再將 Node「閂／開」</h2>
+<p>今課開場起嘅<strong>雙節點</strong> kind 叢集，control-plane 留返正式叢集個污點（kind 得單節點嗰陣先自動幫你拎走，0001 講嘅就係單節點 case）。呢個就係今課最好嘅教材：先睇污點點樣令 Pod「全逼去 worker」，再貼多個污點睇 Pod 卡 Pending，最後用 toleration 放行。</p>
+
+<div class="terminal box">
+  <div class="box-title">先回收 0001 的伏筆：control-plane 污點</div>
+  <pre><span class="comment"># 18. 看兩台節點的 Taints：control-plane 掛著 NoSchedule 污點、worker 沒有</span>
+<span class="prompt">kubectl get nodes -o 'custom-columns=NAME:.metadata.name,TAINTS:.spec.taints[*].key,EFFECT:.spec.taints[*].effect'</span>
+<span class="comment">#    kind-control-plane → node-role.kubernetes.io/control-plane / NoSchedule
+#    kind-worker        → &lt;none&gt;</span>
+
+<span class="comment"># 19. 佈 3 顆副本：沒有 toleration 的 Pod 進不了 control-plane——三顆全擠在 kind-worker</span>
+<span class="prompt">kubectl create deployment taint-demo --image=nginx:1.25 --replicas=3</span>
+<span class="prompt">kubectl get pods -o wide</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">污點實戰：NoSchedule 只擋「新的」</div>
+  <pre><span class="comment"># 20. 把 worker 也貼上污點——從現在起兩台都不能排新 Pod</span>
+<span class="prompt">kubectl taint node kind-worker disk=slow:NoSchedule</span>
+
+<span class="comment"># 21. 刪一顆 Pod：替身兩台都進不去，直接卡 Pending（這正是「排不上」的現場）</span>
+<span class="prompt">kubectl delete pod taint-demo-(隨機尾碼)</span>
+<span class="prompt">kubectl get pods -o wide</span>
+<span class="prompt">kubectl describe pod -l app=taint-demo | tail -n 15</span>
+<span class="comment">#    Events 會寫：node(s) had untolerated taint {disk=slow:NoSchedule}
+#    原本沒被刪的 Pod 還好好在跑——NoSchedule 不逐出既有 Pod</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 21 步三樣嘢同時出現：① <strong>NoSchedule 淨係擋新 Pod</strong>（舊嘅唔郁）；② 排唔上嘅症狀係 <strong>Pending</strong>，原因寫喺 describe 嘅 Events（<code>untolerated taint</code>）；③ 一台 Node 有污點都未夠絕——等兩台都「閂埋門」，Pod 就真係無處可去。CKA 一見 Pending，第一時間就查 Node Taints。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">加上 toleration，把 worker 重新「打開」</div>
+  <pre><span class="comment"># 22. 產出 deployment YAML，在 spec.template.spec 加 tolerations（0004 的 dry-run 工作法）</span>
+<span class="prompt">kubectl create deployment taint-demo --image=nginx:1.25 --replicas=3 --dry-run=client -o yaml > taint-demo.yaml</span>
+<span class="prompt">nano taint-demo.yaml</span>
+<span class="comment">#      tolerations:
+#      - key: disk
+#        operator: Equal
+#        value: slow
+#        effect: NoSchedule</span>
+
+<span class="comment"># 23. 套用：有卡的 Pod 能進 worker，Pending 的替身被接手、全部 Running</span>
+<span class="prompt">kubectl apply -f taint-demo.yaml</span>
+<span class="prompt">kubectl get pods -o wide</span>
+<span class="comment">#    注意：Pod 仍不會去 control-plane——worker 的污點被容忍，control-plane 的沒有</span>
+
+<span class="comment"># 24. 收尾：移除 worker 的污點、刪 Deployment</span>
+<span class="prompt">kubectl taint node kind-worker disk=slow:NoSchedule-</span>
+<span class="prompt">kubectl delete deployment taint-demo</span>
+<span class="prompt">rm taint-demo.yaml</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">想將 Pod 都放上 control-plane？（實驗用）</div>
+  <p>兩個方法二揀一：① 拎走 control-plane 個污點 <code>kubectl taint node kind-control-plane node-role.kubernetes.io/control-plane:NoSchedule-</code>；② 喺 Pod 加返條對應嘅 toleration（key <code>node-role.kubernetes.io/control-plane</code>、effect <code>NoSchedule</code>）。正式叢集唔建議將普通 workload 放上 control-plane，但考試可能叫你將某粒 Pod 排上去——識呢條指令就夠。</p>
+</div>
+
+<div class="warn box">
+  <div class="box-title">NoExecute 的差別（考試愛考一句話）</div>
+  <p>將效果換成 <code>NoExecute</code>，唔止「唔排新嘅」——kubelet 會將<strong>已經喺嗰台 Node 上面、又冇對應 toleration</strong> 嘅 Pod 直接趕走（terminate）。Pod 可以加 <code>tolerationSeconds</code> 話「寬限 N 秒先趕」。NoExecute 成日用嚟做「要落線維修嘅 Node 先將 Pod 趕走」。</p>
+</div>
+
+<h2>6. nodeSelector 同 Node Affinity：Pod 指定要去邊台</h2>
+<p>Taint/Toleration 係「Node 拒絕你」；調轉，Pod 都可以「指明想去邊」：</p>
+<ul>
+  <li><a href="../reference/glossary.html">nodeSelector</a>：最簡單——將 Pod 釘死喺「帶某 label」嘅 Node 上面。語法淨係識比「等於」，而且 <code>nodeSelector</code> 指明嗰個鍵嘅 label 要喺 Node 度存在先排得上。</li>
+  <li><a href="../reference/glossary.html">Node Affinity（節點親和性）</a>：更強表達力——<code>requiredDuringSchedulingIgnoredDuringExecution</code>（硬性，等於 nodeSelector 但支援 <code>In</code>/<code>NotIn</code> 等 operator）同 <code>preferredDuringSchedulingIgnoredDuringExecution</code>（軟性，「盡量」但唔包）。</li>
+</ul>
+<p>一句對比：<strong>nodeSelector 係「淨識等於嘅 affinity」；affinity 係「識揀 label 嘅 nodeSelector」。</strong></p>
+
+<div class="tip box">
+  <div class="box-title">🍸 酒吧版一次記晒：保安、訂位、同「盡量坐窗口」</div>
+  <p>諗返 0001 門口保安：<strong>taint 係門口阿哥話「呢層 VIP 先入得」</strong>（Node 拒絕你），<strong>toleration 係你袋住張 VIP 卡</strong>（有卡先畀入，無卡企門口＝Pending）。而 <strong>nodeSelector 係你自己話「我要坐有 disk=fast 牌嗰張枱」</strong>（Pod 指明要去邊，冇嗰張枱就企喺度等）。<strong>affinity required 係同一句說話講得精啲</strong>（識講 In/NotIn），<strong>preferred 係「最好有窗口位啦，無都坐低先」</strong>（軟性，盡量但唔包）。保安唔畀入同你揀錯位，結果都係 Pending——分別只在於怪保安定怪自己。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">並排對照：nodeSelector vs required（硬）vs preferred（軟）——留意縮排層級</div>
+  <pre><span class="comment"># A. nodeSelector：最短，淨識「等於」（縮排 2 層：spec.template.spec → nodeSelector）</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  template:</span>
+<span class="prompt">    spec:                    # ← Pod.spec（第 1 層）</span>
+<span class="prompt">      nodeSelector:          # ← 第 2 層：同 containers 平級</span>
+<span class="prompt">        disk: fast           # ← 第 3 層：key: value，淨識等於</span>
+
+<span class="comment"># B. nodeAffinity required：硬性，等於 nodeSelector 但識 In/NotIn（縮排 5 層先到 key）</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  template:</span>
+<span class="prompt">    spec:                    # ← 第 1 層</span>
+<span class="prompt">      affinity:              # ← 第 2 層</span>
+<span class="prompt">        nodeAffinity:        # ← 第 3 層</span>
+<span class="prompt">          requiredDuringSchedulingIgnoredDuringExecution:  # ← 第 4 層：硬性</span>
+<span class="prompt">            nodeSelectorTerms:                             # ← 第 5 層</span>
+<span class="prompt">            - matchExpressions:                            # ← 第 6 層（list 加 -）</span>
+<span class="prompt">              - key: disk            # ← 第 7 層：先見到條件</span>
+<span class="prompt">                operator: In         # ← In / NotIn / Exists 任揀</span>
+<span class="prompt">                values: [fast]       # ← 想要嘅值</span>
+
+<span class="comment"># C. nodeAffinity preferred：軟性，「盡量」唔包（多 weight＋preference 包住）</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  template:</span>
+<span class="prompt">    spec:                    # ← 第 1 層</span>
+<span class="prompt">      affinity:              # ← 第 2 層</span>
+<span class="prompt">        nodeAffinity:        # ← 第 3 層</span>
+<span class="prompt">          preferredDuringSchedulingIgnoredDuringExecution: # ← 第 4 層：軟性</span>
+<span class="prompt">          - weight: 10                         # ← 第 5 層：分數，愈大愈想去</span>
+<span class="prompt">            preference:                        # ← 第 5 層：想要咩</span>
+<span class="prompt">              matchExpressions:                # ← 第 6 層</span>
+<span class="prompt">              - key: disk                      # ← 第 7 層</span>
+<span class="prompt">                operator: In</span>
+<span class="prompt">                values: [fast]</span>
+<span class="comment"># 考場背法：見 required＝唔啱就 Pending；見 preferred＋weight＝唔啱都照排，只係少分</span></pre>
+</div>
+
+<h2>7. 實作 C：nodeSelector 釘死 worker，再改寫做 affinity</h2>
+
+<div class="terminal box">
+  <div class="box-title">nodeSelector 把 Pod 釘在 worker</div>
+  <pre><span class="comment"># 25. 先幫 kind-worker 貼一個 label（用 0003 的 kubectl label）</span>
+<span class="prompt">kubectl label node kind-worker disk=fast</span>
+
+<span class="comment"># 26. 產出 YAML 並加 nodeSelector（在 template.spec 下、containers 外）</span>
+<span class="prompt">kubectl create deployment pinned --image=nginx:1.25 --replicas=2 --dry-run=client -o yaml > pinned.yaml</span>
+<span class="prompt">nano pinned.yaml</span>
+<span class="comment">#      spec.template.spec:
+#        nodeSelector:
+#          disk: fast</span>
+<span class="prompt">kubectl apply -f pinned.yaml</span>
+
+<span class="comment"># 27. 兩顆都該在 kind-worker 上——這就是「釘選」</span>
+<span class="prompt">kubectl get pods -o wide -l app=pinned</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">把 nodeSelector 改寫成等價的 nodeAffinity</div>
+  <pre><span class="comment"># 28. 用 nano 把 nodeSelector 段換成 nodeAffinity（硬性 required）</span>
+<span class="prompt">nano pinned.yaml</span>
+<span class="comment">#      spec.template.spec:
+#        affinity:
+#          nodeAffinity:
+#            requiredDuringSchedulingIgnoredDuringExecution:
+#              nodeSelectorTerms:
+#              - matchExpressions:
+#                - key: disk
+#                  operator: In
+#                  values: [fast]</span>
+<span class="prompt">kubectl apply -f pinned.yaml</span>
+<span class="prompt">kubectl get pods -o wide -l app=pinned</span>
+<span class="comment">#    效果與 nodeSelector 相同，但 operator 可以換成 NotIn 等條件</span>
+
+<span class="comment"># 29. 收尾：刪 Deployment、移除節點 label</span>
+<span class="prompt">kubectl delete deployment pinned</span>
+<span class="prompt">kubectl label node kind-worker disk-</span>
+<span class="prompt">rm pinned.yaml</span>
+
+<span class="comment"># 30. 課末確認叢集狀態：乾淨的雙節點，留給下一課</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pods -A | head</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 26 步兩粒 Pod 全部喺 <code>kind-worker</code>，因為 nodeSelector 係硬條件：Node 上面冇 <code>disk=fast</code> 呢個 label，Pod 就會卡喺 <code>Pending</code>（試下拎走個 label 再起就見到）。第 28 步將同一個條件翻譯做 nodeAffinity，行為一樣、表達力升級——考試兩樣都要識寫。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① taint 語法：<code>kubectl taint node &lt;node&gt; key=value:Effect</code>，拎走加 <code>-</code>；三種效果 NoSchedule／PreferNoSchedule／NoExecute，最後嗰個會趕走舊 Pod。② toleration 同 taint 要「一對一」：key、operator/value、effect 三樣啱晒先有效；容忍 ≠ 偏好。③ 資源數簿：<code>kubectl describe node</code> 睇 <code>Allocated resources</code>；Pod 排唔上先查 Node 嘅 Events 同污點。④ QoS 秒判：全冇寫＝BestEffort；有寫兼全等＝Guaranteed；其他＝Burstable。⑤ 想排指定 Node：先確認 label（<code>kubectl get nodes --show-labels</code>），nodeSelector 淨識等於、affinity 先支援 In/NotIn。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你將練習環境正式切咗去 WSL2 bash，仲喺 WSL2 起返雙節點 kind 叢集。</li>
+  <li>你識寫 <code>requests</code>／<code>limits</code>，識睇 Node 嘅 Allocated resources，仲識分三種 QoS 等級。</li>
+  <li>你親手貼過又拎走 Node 污點，見證 NoSchedule「淨擋新 Pod」，仲識用 toleration 攞返排程資格。</li>
+  <li>你識用 nodeSelector 將 Pod 釘去指定 Node，仲識將同一個條件改寫做 nodeAffinity。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Q1：scheduler 揀 Node 主要睇邊個欄位？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">請求數值</button>
+    <button class="quiz-opt">上限數值</button>
+    <button class="quiz-opt">實際用量</button>
+    <button class="quiz-opt">標籤鍵值</button>
+  </div>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">Q2：requests 同 limits 寫咗但唔等，係邊個 QoS 等級？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">保證等級</button>
+    <button class="quiz-opt">爆發等級</button>
+    <button class="quiz-opt">盡力等級</button>
+    <button class="quiz-opt">未知等級</button>
+  </div>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz" data-answer="3">
+  <p class="quiz-q">Q3：Node 貼咗 NoExecute 污點，舊 Pod 會點？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">升級它們</button>
+    <button class="quiz-opt">備份它們</button>
+    <button class="quiz-opt">保留不動</button>
+    <button class="quiz-opt">逐出它們</button>
+  </div>
+  <p class="quiz-feedback"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>資源同排程令 Pod「放得落、放啱位」。下一課開始 Phase 2：Pod 內容物管理——ConfigMap 同 Secret，將「設定」由 image 抽出嚟，等同一個 image 喺唔同環境（dev/test/prod）用唔同設定跑。今課完叢集 keep 住乾淨雙節點、冇殘留練習物件，下一課直接沿用。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/">Resource Management for Pods and Containers（官方文件）</a>與<a href="https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/">Assigning Pods to Nodes（官方文件）</a> —— 本課嘅權威版，重點睇「Requests and limits」同「Taints and Tolerations」兩節，約 20 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0004-daemonset-job.html">← 上一課：DaemonSet 與 Job</a>
+  <a href="0006-configmap-secret.html">下一課：ConfigMap 與 Secret →</a>
+</div>
+</div>
+</body>
+</html>

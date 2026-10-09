@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0020 — CKA 模擬考同衝刺策略</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 5 · 對應考綱：<a href="../reference/cka-domain-map.html">Troubleshooting（30%）＋全領域</a> · 需時約 60 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 最後一課 · 決勝 60 分鐘</span>
+  <h1>Lesson 0020：CKA 模擬考同衝刺策略</h1>
+  <p><strong>目標：</strong>課程最後一課：一場 60 分鐘、10 題嘅<strong>計時模擬考</strong>，覆蓋 0002–0019 全部重點。考完對答案、錯題回課、再讀「一頁濃縮小抄」——之後你就有料喺真考試（2 小時、查得官方文件、Killer.sh 17 題模擬）入面攞好成績。</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  學咗 19 課唔等於考得掂——CKA 考嘅係速度同臨場反應！呢場模擬考就係你嘅試金石：60 分鐘內睇下自己邊度仲瀨嘢，邊度已經搞掂。貼地練一次，好過齋睇十次筆記！
+</div>
+
+<div class="warn box">
+  <div class="box-title">模擬考規則（睇完先開波）</div>
+  <p>① 計時 <strong>60 分鐘</strong>，10 題，每題約 6 分鐘。② 全程喺 WSL2 bash、本地 Calico 叢集操作（第 8 題備份檔擺 ~/practice）。③ 查得官方文件，但<strong>唔准停低睇課文</strong>——寫完先對答案。④ 每題下面有「驗收指令」，自己判斷過唔過。⑤ 另開一個 <code>~/practice/mock-notes.txt</code> 記低「邊題卡住、卡喺邊」。</p>
+</div>
+
+<div class="diagram-card">
+  <h3>📋 60 分鐘 Kanban 戰鬥板：TODO → DOING → VERIFIED / SKIPPED</h3>
+  <p>唔好將 10 題當直線跑，要當 Kanban 玩：<strong>DOING 永遠只得 1 張卡，卡住 5:00 即寫低題號掟去 SKIPPED。</strong></p>
+  <svg class="svg-diagram" viewBox="0 0 780 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Kanban board TODO DOING VERIFIED SKIPPED">
+    <g transform="translate(15,15)">
+      <rect width="175" height="250" rx="8" fill="#f6f8fa" stroke="#57606a" stroke-width="2"/>
+      <text x="12" y="28" font-weight="bold" fill="#57606a" font-size="13">📥 TODO (10)</text>
+      <text x="12" y="48" font-size="11" fill="#666">開考掃題即派卡</text>
+      <rect x="12" y="58" width="151" height="34" rx="5" fill="#fff" stroke="#8c959f" stroke-width="1.5"/>
+      <text x="20" y="72" font-size="11" fill="#333">Q9 cordon 🟢 易</text>
+      <text x="20" y="86" font-size="10" fill="#666">預 3 分鐘，秒殺</text>
+      <rect x="12" y="98" width="151" height="34" rx="5" fill="#fff" stroke="#8c959f" stroke-width="1.5"/>
+      <text x="20" y="112" font-size="11" fill="#333">Q8 etcd 🔴 難</text>
+      <text x="20" y="126" font-size="10" fill="#666">預 8 分鐘，留後</text>
+      <rect x="12" y="138" width="151" height="34" rx="5" fill="#fff" stroke="#8c959f" stroke-width="1.5"/>
+      <text x="20" y="152" font-size="11" fill="#333">Q1…Q7 Q10 …</text>
+      <text x="20" y="166" font-size="10" fill="#666">其餘 8 張排隊</text>
+      <text x="12" y="192" font-size="11" fill="#333">🟢 易先做</text>
+      <text x="12" y="210" font-size="11" fill="#333">🔴 難貼旗後打</text>
+      <text x="12" y="232" font-size="11" fill="#9a6700" font-weight="bold">0–5 分鐘：掃晒派晒</text>
+    </g>
+    <g transform="translate(335,125)">
+      <rect width="90" height="30" rx="15" fill="#0969da"/>
+      <text x="14" y="20" font-size="12" fill="#fff" font-weight="bold">拉一張 ➔</text>
+    </g>
+    <g transform="translate(205,15)">
+      <rect width="175" height="250" rx="8" fill="#e6f4ff" stroke="#0969da" stroke-width="2.5"/>
+      <text x="12" y="28" font-weight="bold" fill="#0969da" font-size="13">🔨 DOING (1)</text>
+      <text x="12" y="48" font-size="11" fill="#666">一次只做一題！</text>
+      <rect x="12" y="58" width="151" height="70" rx="5" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="20" y="78" font-size="12" fill="#333" font-weight="bold">Q9 cordon 中…</text>
+      <text x="20" y="96" font-size="11" fill="#333">cordon ➔ get ➔</text>
+      <text x="20" y="112" font-size="11" fill="#333">uncordon ➔ get</text>
+      <text x="12" y="152" font-size="11" fill="#333">⏱️ 計時 5:00 熔斷：</text>
+      <text x="12" y="170" font-size="11" fill="#333">卡住即寫低題號</text>
+      <text x="12" y="188" font-size="11" fill="#333">下一題，唔好纏鬥！</text>
+      <text x="12" y="212" font-size="11" fill="#1a7f37">做完即驗收先郁</text>
+      <text x="12" y="232" font-size="11" fill="#1a7f37">✅ ➔ VERIFIED</text>
+      <text x="12" y="250" font-size="11" fill="#cf222e">❌ 卡 ➔ SKIPPED</text>
+    </g>
+    <g transform="translate(395,15)">
+      <rect width="175" height="250" rx="8" fill="#e6fcf0" stroke="#1a7f37" stroke-width="2"/>
+      <text x="12" y="28" font-weight="bold" fill="#1a7f37" font-size="13">✅ VERIFIED</text>
+      <text x="12" y="48" font-size="11" fill="#666">驗收過先叫掂</text>
+      <rect x="12" y="58" width="151" height="34" rx="5" fill="#fff" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="20" y="72" font-size="11" fill="#333">Q9 ✅ 3 分鐘</text>
+      <text x="20" y="86" font-size="10" fill="#666">SchedulingDisabled 見到</text>
+      <rect x="12" y="98" width="151" height="34" rx="5" fill="#fff" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="20" y="112" font-size="11" fill="#333">Q1 ✅ Q2 ✅ …</text>
+      <text x="20" y="126" font-size="10" fill="#666">逐張儲分，唔回頭</text>
+      <text x="12" y="160" font-size="11" fill="#333">55–60 分鐘覆卷：</text>
+      <text x="12" y="178" font-size="11" fill="#333">get / describe 逐張</text>
+      <text x="12" y="196" font-size="11" fill="#333">撳多次驗收指令</text>
+    </g>
+    <g transform="translate(585,15)">
+      <rect width="180" height="250" rx="8" fill="#ffebe9" stroke="#cf222e" stroke-width="2"/>
+      <text x="12" y="28" font-weight="bold" fill="#cf222e" font-size="13">⏭️ SKIPPED 待返轉</text>
+      <text x="12" y="48" font-size="11" fill="#666">唔係放棄，係遲啲殺</text>
+      <rect x="12" y="58" width="156" height="40" rx="5" fill="#fff" stroke="#cf222e" stroke-width="1.5" stroke-dasharray="6 3"/>
+      <text x="20" y="74" font-size="11" fill="#333">Q8 etcd 🚩 卡 5:00</text>
+      <text x="20" y="90" font-size="10" fill="#666">寫低「Q8」➔ 下一題</text>
+      <text x="12" y="118" font-size="11" fill="#333">40–55 分鐘返嚟啃：</text>
+      <text x="12" y="136" font-size="11" fill="#333">explain＋查文件慢慢嚟</text>
+      <text x="12" y="154" font-size="11" fill="#333">NP / etcd 預多時間</text>
+      <text x="12" y="182" font-size="11" fill="#9a6700" font-weight="bold">實戰例子：</text>
+      <text x="12" y="200" font-size="11" fill="#333">Q9 易 3 分鐘先食 ✅</text>
+      <text x="12" y="218" font-size="11" fill="#333">Q8 難貼旗 40 分鐘後殺</text>
+    </g>
+  </svg>
+  <p>記住：<strong>先易後難、唔纏鬥、做完即驗收</strong>——時間先係最大嘅敵人。⏱️ 熔斷規則：<strong>5:00 卡住寫低題號下一題</strong>（寫喺 <code>~/practice/mock-notes.txt</code>），唔准坐喺度發吽哣。</p>
+</div>
+
+<h2>1. 實作 A：10 題計時模擬考</h2>
+<p>撳錶開波！下面 10 題覆蓋成個課程，做唔切都唔好偷睇住。開波前先學識呢招 <strong>dry-run 填空法</strong>——唔使背成份 YAML，畀 kubectl 幫你寫骨架，你填關鍵格就得。</p>
+
+<div class="diagram-card">
+  <h3>✍️ dry-run 填空法：骨架佢寫，答案你填（Q4／Q7／Q10 必用）</h3>
+  <p>🐳 Docker 老朋友：<code>--dry-run=client -o yaml</code> 就係「幫你寫 Dockerfile 骨架嗰個朋友」——FROM、COPY 幫你排好，你淨係改 APP 名同 port。K8s 一樣：骨架自動出，你填 <strong>___BLANK___</strong> 嗰幾格。</p>
+  <svg class="svg-diagram" viewBox="0 0 780 240" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="dry-run 填空流程">
+    <g transform="translate(15,20)">
+      <rect width="220" height="140" rx="6" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#0969da" font-size="13">1️⃣ 出骨架</text>
+      <text x="12" y="48" font-size="11" fill="#333">kubectl run env-check …</text>
+      <text x="12" y="66" font-size="11" fill="#333">--dry-run=client -o yaml</text>
+      <text x="12" y="88" font-size="11" fill="#666">＞ env-check.yaml</text>
+      <text x="12" y="110" font-size="11" fill="#666">唔使背 apiVersion</text>
+      <text x="12" y="130" font-size="11" fill="#666">唔使背 kind / spec</text>
+    </g>
+    <g transform="translate(345,85)">
+      <rect width="90" height="30" rx="15" fill="#0969da"/>
+      <text x="14" y="20" font-size="12" fill="#fff" font-weight="bold">nano ➔</text>
+    </g>
+    <g transform="translate(275,20)">
+      <rect width="220" height="140" rx="6" fill="#fff8e6" stroke="#9a6700" stroke-width="2.5"/>
+      <text x="12" y="26" font-weight="bold" fill="#9a6700" font-size="13">2️⃣ 填 ___BLANK___</text>
+      <text x="12" y="48" font-size="11" fill="#333">Q4：envFrom / env</text>
+      <text x="12" y="66" font-size="11" fill="#333">Q7：volumeMounts＋volumes</text>
+      <text x="12" y="88" font-size="11" fill="#333">Q10：backend.service 名＋port</text>
+      <text x="12" y="110" font-size="11" fill="#666">淨係填呢幾行，其餘唔郁</text>
+      <text x="12" y="130" font-size="11" fill="#9a6700" font-weight="bold">唔識串字？問 explain！</text>
+    </g>
+    <g transform="translate(605,85)">
+      <rect width="90" height="30" rx="15" fill="#1a7f37"/>
+      <text x="12" y="20" font-size="12" fill="#fff" font-weight="bold">apply ➔</text>
+    </g>
+    <g transform="translate(530,20)">
+      <rect width="0" height="0" fill="none"/>
+    </g>
+    <g transform="translate(15,175)">
+      <rect width="750" height="50" rx="6" fill="#e6fcf0" stroke="#1a7f37" stroke-width="2"/>
+      <text x="15" y="22" font-size="12" fill="#333">🔍 唔記得欄位名：kubectl explain pod.spec.containers.envFrom ｜ …volumeMounts ｜ …ingress.rules.backend ⏎</text>
+      <text x="15" y="40" font-size="11" fill="#666">explain 係開卷合法小抄——照抄串字，唔使靠記性，Q4/Q7/Q10 卡住即用。</text>
+    </g>
+  </svg>
+  <table>
+    <thead>
+      <tr><th>題目</th><th>骨架指令（已喺題目）</th><th>填邊格 ___BLANK___</th><th>explain 查詢</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Q4 env-check</td><td><code>kubectl run … --dry-run=client -o yaml</code></td><td><code>envFrom: configMapRef: ___BLANK___(app-env)</code><br><code>env.valueFrom.secretKeyRef: ___BLANK___</code></td><td><code>kubectl explain pod.spec.containers.envFrom</code></td></tr>
+      <tr><td>Q7 pv-pod</td><td><code>kubectl run pv-pod … --dry-run=client -o yaml</code></td><td><code>volumeMounts.mountPath: ___BLANK___(/data)</code><br><code>volumes.persistentVolumeClaim.claimName: ___BLANK___</code></td><td><code>kubectl explain pod.spec.volumes.persistentVolumeClaim</code></td></tr>
+      <tr><td>Q10 ingress</td><td>手寫三件套（題目畀咗模板）</td><td><code>backend.service.name: ___BLANK___(web-np)</code><br><code>backend.service.port.number: ___BLANK___(80)</code></td><td><code>kubectl explain ingress.spec.rules.http.paths.backend</code></td></tr>
+    </tbody>
+  </table>
+  <p>考場動作：<strong>dry-run 出骨架 → explain 對串字 → nano 填 BLANK → apply → 驗收指令撳多次。</strong>Q4／Q7／Q10 唔係考背書，係考你識唔識填表。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 1（0002 溫習）Deployment 更新同回滾</div>
+  <pre><span class="comment"># 1. 需求：開 deployment web（nginx:1.25、3 副本）；升上 nginx:1.26 並確認 rollout 成功；再回滾返上一版。</span>
+<span class="prompt">kubectl create deployment web --image=nginx:1.25 --replicas=3</span>
+<span class="prompt">kubectl set image deployment/web web=nginx:1.26</span>
+<span class="prompt">kubectl rollout status deployment/web</span>
+<span class="prompt">kubectl rollout undo deployment/web</span>
+<span class="comment">#    驗收：kubectl rollout history deployment/web 有 ≥3 個 REVISION；get pods 3 粒 Running</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 2（0009 溫習）將服務開成 NodePort</div>
+  <pre><span class="comment"># 2. 需求：將題 1 嘅 deployment/web 暴露成 NodePort Service（port 80），確認 Endpoints 有 3 個 IP。</span>
+<span class="prompt">kubectl expose deployment web --type=NodePort --port=80 --name=web-np</span>
+<span class="comment">#    驗收：kubectl get svc web-np（TYPE=NodePort）；kubectl get endpoints web-np 有 3 個 IP</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 3（0004 溫習）Job 同 CronJob</div>
+  <pre><span class="comment"># 3. 需求：a) 用 kubectl create job 開一支跑完即走嘅 Job（busybox 印 hello）；b) 開每 2 分鐘跑一次嘅 CronJob。</span>
+<span class="prompt">kubectl create job hello-job --image=busybox:1.36 -- echo hello-cka</span>
+<span class="prompt">kubectl create cronjob every-2min --image=busybox:1.36 --schedule="*/2 * * * *" -- date</span>
+<span class="comment">#    驗收：a) get jobs → COMPLETIONS 1/1，kubectl logs job/hello-job 有 hello-cka
+#          b) get cronjob 睇到 SCHEDULE；等 2 分鐘 get jobs 出現 every-2min-xxx</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 4（0006 溫習）ConfigMap 同 Secret 注入</div>
+  <pre><span class="comment"># 4. 需求：a) configmap app-env（APP_ENV=staging）；b) secret db-secret（DB_PASSWORD=secret123）；
+#            c) 一粒 pod 將兩者都掛成環境變數並印出嚟。</span>
+<span class="prompt">kubectl create configmap app-env --from-literal=APP_ENV=staging</span>
+<span class="prompt">kubectl create secret generic db-secret --from-literal=DB_PASSWORD=secret123</span>
+<span class="prompt">kubectl run env-check --image=busybox:1.36 --restart=Never --dry-run=client -o yaml -- sleep 3600 &gt; env-check.yaml</span>
+<span class="comment">#    nano 手動加：envFrom.configMapRef（app-env）＋ env.valueFrom.secretKeyRef（DB_PASSWORD）</span>
+<span class="prompt">kubectl apply -f env-check.yaml</span>
+<span class="comment">#    驗收：kubectl exec env-check -- sh -c 'echo $APP_ENV $DB_PASSWORD' → staging secret123</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 5（0013 溫習）RBAC</div>
+  <pre><span class="comment"># 5. 需求：namespace team-a 開 SA deployer；授權佢喺 team-a 內對 deployments 可以
+#           get/list/create/update；用 auth can-i 驗證 get=yes、delete=no、kube-system 嘅 get=no。</span>
+<span class="prompt">kubectl create ns team-a</span>
+<span class="prompt">kubectl -n team-a create serviceaccount deployer</span>
+<span class="prompt">kubectl -n team-a create role deployer-role --verb=get,list,create,update --resource=deployments</span>
+<span class="prompt">kubectl -n team-a create rolebinding deployer-bind --role=deployer-role --serviceaccount=team-a:deployer</span>
+<span class="comment">#    驗收：三行 auth can-i（--as=system:serviceaccount:team-a:deployer）</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 6（0012 溫習）NetworkPolicy</div>
+  <pre><span class="comment"># 6. 需求：namespace app 內三粒 pod（app=a、app=b、app=x），app=b 跑 nginx。
+#           NetworkPolicy：只准 app=a 連到 app=b 嘅 80，其餘全擋。
+#           先開資源，再落 default-deny＋精準放行（0012 兩招）。</span>
+<span class="prompt">kubectl create ns app</span>
+<span class="prompt">kubectl -n app run app-b --image=nginx:1.25 --labels=app=b --restart=Never --port=80</span>
+<span class="prompt">kubectl -n app expose pod app-b --port=80</span>
+<span class="prompt">kubectl -n app run app-a --image=busybox:1.36 --labels=app=a --restart=Never -- sleep 3600</span>
+<span class="prompt">kubectl -n app run app-x --image=busybox:1.36 --labels=app=x --restart=Never -- sleep 3600</span>
+<span class="prompt">kubectl apply -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: NetworkPolicy</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: allow-a-to-b</span>
+<span class="prompt">  namespace: app</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  podSelector:</span>
+<span class="prompt">    matchLabels:</span>
+<span class="prompt">      app: b</span>
+<span class="prompt">  policyTypes: ["Ingress"]</span>
+<span class="prompt">  ingress:</span>
+<span class="prompt">  - from:</span>
+<span class="prompt">    - podSelector:</span>
+<span class="prompt">        matchLabels:</span>
+<span class="prompt">          app: a</span>
+<span class="prompt">    ports:</span>
+<span class="prompt">    - protocol: TCP</span>
+<span class="prompt">      port: 80</span>
+<span class="prompt">EOF</span>
+<span class="comment">#    驗收：exec app-a 連 http://app-b 通；exec app-x 連 http://app-b 逾時</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 7（0008 溫習）靜態 PV + PVC</div>
+  <pre><span class="comment"># 7. 需求：hostPath PV（kind-worker 嘅 /mnt/mock、1Gi、Retain、storageClassName ""）
+#           + 同名嘅 PVC 綁定成功；掛入 pod 後寫到檔。</span>
+<span class="prompt">docker exec kind-worker mkdir -p /mnt/mock</span>
+<span class="prompt">kubectl apply -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: PersistentVolume</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: pv-mock</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  capacity: {storage: 1Gi}</span>
+<span class="prompt">  accessModes: ["ReadWriteOnce"]</span>
+<span class="prompt">  persistentVolumeReclaimPolicy: Retain</span>
+<span class="prompt">  storageClassName: ""</span>
+<span class="prompt">  hostPath: {path: /mnt/mock, type: DirectoryOrCreate}</span>
+<span class="prompt">  nodeAffinity:</span>
+<span class="prompt">    required:</span>
+<span class="prompt">      nodeSelectorTerms:</span>
+<span class="prompt">      - matchExpressions:</span>
+<span class="prompt">        - key: kubernetes.io/hostname</span>
+<span class="prompt">          operator: In</span>
+<span class="prompt">          values: ["kind-worker"]</span>
+<span class="prompt">EOF</span>
+<span class="prompt">kubectl apply -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: PersistentVolumeClaim</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: pvc-mock</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  accessModes: ["ReadWriteOnce"]</span>
+<span class="prompt">  storageClassName: ""</span>
+<span class="prompt">  resources: {requests: {storage: 1Gi}}</span>
+<span class="prompt">EOF</span>
+<span class="prompt">kubectl run pv-pod --image=busybox:1.36 --restart=Never --dry-run=client -o yaml -- sleep 3600 &gt; pv-pod.yaml</span>
+<span class="comment">#    nano 手動加 volume/volumeMount（claimName: pvc-mock，mountPath: /data）</span>
+<span class="prompt">kubectl apply -f pv-pod.yaml</span>
+<span class="comment">#    驗收：get pvc → Bound；exec pv-pod 寫到讀返 /data/mock.txt</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 8（0014 溫習）etcd snapshot</div>
+  <pre><span class="comment"># 8. 需求：對本地 etcd 存 snapshot 到 /var/lib/etcd/etcd-mock.db、拷返 host，並用 snapshot status 驗證。</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- sh -c 'ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key snapshot save /var/lib/etcd/etcd-mock.db'</span>
+<span class="prompt">docker cp kind-control-plane:/var/lib/etcd/etcd-mock.db ~/practice/etcd-mock.db</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- sh -c 'ETCDCTL_API=3 etcdctl snapshot status /var/lib/etcd/etcd-mock.db --write-out=table'</span>
+<span class="comment">#    驗收：status table 有 HASH/REVISION/TOTAL KEYS；host 上 ls -lh 睇到檔案</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 9（0016 溫習）節點維護</div>
+  <pre><span class="comment"># 9. 需求：將 kind-worker cordon，確認唔排得新 Pod 之後再 uncordon 復原。</span>
+<span class="prompt">kubectl cordon kind-worker</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl uncordon kind-worker</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="comment">#    驗收：cordon 後 STATUS 出現 SchedulingDisabled；uncordon 後消失</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">題 10（0011 溫習）Ingress 資源</div>
+  <pre><span class="comment"># 10. 需求：寫一份 Ingress（ingressClassName: nginx）將 /demo 導去題 2 嘅 web-np:80。
+#          本地 Calico 叢集冇 ingress 控制器，呢題練「寫啱資源」——
+#          apply 成功＋describe 冇 schema 錯誤即當過（ADDRESS 留空係預期）。</span>
+<span class="prompt">kubectl apply -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: Ingress</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: mock-ingress</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  ingressClassName: nginx</span>
+<span class="prompt">  rules:</span>
+<span class="prompt">  - http:</span>
+<span class="prompt">      paths:</span>
+<span class="prompt">      - path: /demo</span>
+<span class="prompt">        pathType: Prefix</span>
+<span class="prompt">        backend:</span>
+<span class="prompt">          service:</span>
+<span class="prompt">            name: web-np</span>
+<span class="prompt">            port:</span>
+<span class="prompt">              number: 80</span>
+<span class="prompt">EOF</span>
+<span class="comment">#    驗收：kubectl get ingress mock-ingress 睇到規則；describe 冇 error</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">模擬考收尾：清場＋計分</div>
+  <pre><span class="comment"># 11. 時間到，先唔好偷睇課文——對住下面「錯題回課對照表」自己剔。清場指令：</span>
+<span class="prompt">kubectl delete deployment web</span>
+<span class="prompt">kubectl delete svc web-np</span>
+<span class="prompt">kubectl delete job hello-job</span>
+<span class="prompt">kubectl delete cronjob every-2min</span>
+<span class="prompt">kubectl delete cm app-env</span>
+<span class="prompt">kubectl delete secret db-secret</span>
+<span class="prompt">kubectl delete pod env-check</span>
+<span class="prompt">kubectl delete ns team-a app</span>
+<span class="prompt">kubectl delete pvc pvc-mock pv pv-mock</span>
+<span class="prompt">kubectl delete pod pv-pod</span>
+<span class="prompt">kubectl delete ingress mock-ingress</span>
+<span class="prompt">kubectl exec -n kube-system etcd-kind-control-plane -- rm -f /var/lib/etcd/etcd-mock.db</span>
+<span class="prompt">rm -f env-check.yaml pv-pod.yaml</span>
+<span class="prompt">kubectl get pods -A</span></pre>
+</div>
+
+<h2>2. 實作 B：錯題回課對照表</h2>
+<p>邊題瀨嘢就返去邊課補鑊，唔好死撐：</p>
+<table>
+  <thead>
+    <tr><th>卡住嘅主題</th><th>返邊課補</th><th>重點動作</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>rollout／回滾</td><td>0002</td><td>set image → rollout status → undo</td></tr>
+    <tr><td>Job／CronJob 旗標</td><td>0004</td><td>dry-run 出 YAML 加 completions</td></tr>
+    <tr><td>requests／QoS</td><td>0005</td><td>describe node 睇 Allocated resources</td></tr>
+    <tr><td>ConfigMap／Secret 注入</td><td>0006</td><td>envFrom／valueFrom／volume 三路</td></tr>
+    <tr><td>探針／HPA</td><td>0007</td><td>READY 0/N 判讀；autoscale 前提</td></tr>
+    <tr><td>PV／PVC／StorageClass</td><td>0008</td><td>storageClassName "" 接靜態 PV</td></tr>
+    <tr><td>Service／Endpoints</td><td>0009</td><td>expose；get endpoints 對照</td></tr>
+    <tr><td>DNS 分層</td><td>0010</td><td>nslookup 全名、NXDOMAIN</td></tr>
+    <tr><td>Ingress 三件套</td><td>0011</td><td>ingressClassName → controller</td></tr>
+    <tr><td>NetworkPolicy</td><td>0012</td><td>default deny 兩模板；egress+DNS</td></tr>
+    <tr><td>RBAC 四物件</td><td>0013</td><td>auth can-i --as=system:serviceaccount:…</td></tr>
+    <tr><td>etcd snapshot</td><td>0014</td><td>三憑證模板；save/status/restore</td></tr>
+    <tr><td>kubeadm init/join</td><td>0015</td><td>token create --print-join-command</td></tr>
+    <tr><td>升級／drain</td><td>0016</td><td>cp 先 node 後；--ignore-daemonsets</td></tr>
+    <tr><td>Helm／kustomize</td><td>0017</td><td>helm rollback；kubectl apply -k</td></tr>
+    <tr><td>Pod 除錯</td><td>0018</td><td>logs --previous；Exit Code 137</td></tr>
+    <tr><td>節點／控制平面</td><td>0019</td><td>describe node Conditions；static pod</td></tr>
+  </tbody>
+</table>
+
+<h2>3. 實作 C：考前 checklist（考前三日逐項剔）</h2>
+<ul>
+  <li><strong>文件書籤</strong>：將官方文件加書籤兼練熟「喺考試介面點開」——kubectl Cheat Sheet、Deployment、Service、NetworkPolicy、PV、RBAC、etcd、kubeadm。真考試查得官方文件，<strong>知去邊度搵快過背晒佢</strong>。</li>
+  <li><strong>別名同環境</strong>：<code>alias k=kubectl</code>、<code>export do="--dry-run=client -o yaml"</code>、<code>complete -F __start_kubectl k</code>（bash completion）——開考第一分鐘搞掂佢。</li>
+  <li><strong>加速反射</strong>：dry-run 出 YAML 再改（0004 起練到爛）、<code>-o wide</code>、<code>kubectl explain</code> 補欄位記憶。</li>
+  <li><strong>時間策略</strong>：先掃晒成卷，先做有把握嗰啲；單題卡超過 5 分鐘即跳，最後先返嚟。</li>
+  <li><strong>Killer.sh</strong>：買考試包 2 次（每次 36 小時），考前一至兩星期各做一次，錯題返去上面對照表。</li>
+</ul>
+
+<h2>4. 一頁濃縮小抄（考前十分鐘睇呢張）</h2>
+
+<div class="diagram-card">
+  <h3>🧩 一頁小抄圖解版：六格 icon 盒（下面文字版照跟）</h3>
+  <svg class="svg-diagram" viewBox="0 0 780 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="六格 icon 小抄">
+    <g transform="translate(15,15)">
+      <rect width="240" height="280" rx="8" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="28" font-weight="bold" fill="#0969da" font-size="13">⚖️ 磅：requests / limits</text>
+      <rect x="12" y="40" width="105" height="46" rx="5" fill="#e6f4ff" stroke="#0969da" stroke-width="1.5"/>
+      <text x="18" y="60" font-size="11" fill="#333" font-weight="bold">requests</text>
+      <text x="18" y="76" font-size="10" fill="#666">排程用・訂位</text>
+      <rect x="123" y="40" width="105" height="46" rx="5" fill="#ffebe9" stroke="#cf222e" stroke-width="1.5"/>
+      <text x="129" y="60" font-size="11" fill="#333" font-weight="bold">limits</text>
+      <text x="129" y="76" font-size="10" fill="#666">執行用・斬線</text>
+      <path d="M 60 96 L 180 96" stroke="#333" stroke-width="2.5"/>
+      <polygon points="60,96 60,88 40,103 60,118 60,110" fill="#0969da"/>
+      <polygon points="180,96 180,88 200,103 180,118 180,110" fill="#cf222e"/>
+      <circle cx="120" cy="96" r="6" fill="#333"/>
+      <path d="M 120 96 L 120 118" stroke="#333" stroke-width="2.5"/>
+      <text x="12" y="140" font-size="11" fill="#333">requests 唔夠位 = Pending</text>
+      <text x="12" y="158" font-size="11" fill="#333">爆 limits = OOMKilled 137</text>
+      <text x="12" y="180" font-size="11" fill="#666">HPA 要有 requests</text>
+      <text x="12" y="198" font-size="11" fill="#666">先計到數</text>
+      <text x="12" y="224" font-size="11" fill="#333">taint 打節點・toleration</text>
+      <text x="12" y="242" font-size="11" fill="#333">寫 Pod 先入得閘</text>
+      <text x="12" y="262" font-size="11" fill="#666">live 失敗重啟・ready 失敗摘流</text>
+    </g>
+    <g transform="translate(270,15)">
+      <rect width="240" height="280" rx="8" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="12" y="28" font-weight="bold" fill="#1a7f37" font-size="13">🔋 電池：QoS 三格</text>
+      <rect x="12" y="42" width="120" height="28" rx="4" fill="none" stroke="#333" stroke-width="2"/>
+      <rect x="134" y="51" width="8" height="10" rx="2" fill="#333"/>
+      <rect x="15" y="45" width="34" height="22" fill="#1a7f37"/>
+      <rect x="51" y="45" width="34" height="22" fill="#1a7f37"/>
+      <rect x="87" y="45" width="34" height="22" fill="#1a7f37"/>
+      <text x="155" y="62" font-size="11" fill="#333">滿電 Guaranteed</text>
+      <rect x="12" y="82" width="120" height="28" rx="4" fill="none" stroke="#333" stroke-width="2"/>
+      <rect x="134" y="91" width="8" height="10" rx="2" fill="#333"/>
+      <rect x="15" y="85" width="34" height="22" fill="#fb8500"/>
+      <rect x="51" y="85" width="34" height="22" fill="#fb8500"/>
+      <rect x="87" y="85" width="34" height="22" fill="#f6f8fa"/>
+      <text x="155" y="102" font-size="11" fill="#333">半電 Burstable</text>
+      <rect x="12" y="122" width="120" height="28" rx="4" fill="none" stroke="#333" stroke-width="2"/>
+      <rect x="134" y="131" width="8" height="10" rx="2" fill="#333"/>
+      <rect x="15" y="125" width="106" height="22" fill="#f6f8fa"/>
+      <text x="155" y="142" font-size="11" fill="#333">吉電 BestEffort</text>
+      <text x="12" y="172" font-size="11" fill="#333">全等 requests=limits</text>
+      <text x="12" y="190" font-size="11" fill="#333">= Guaranteed 最硬淨</text>
+      <text x="12" y="212" font-size="11" fill="#333">全冇 = BestEffort</text>
+      <text x="12" y="230" font-size="11" fill="#333">最先畀人 evict</text>
+      <text x="12" y="254" font-size="11" fill="#666">describe node 睇 Allocated</text>
+    </g>
+    <g transform="translate(525,15)">
+      <rect width="240" height="280" rx="8" fill="#fff" stroke="#cf222e" stroke-width="2"/>
+      <text x="12" y="28" font-weight="bold" fill="#cf222e" font-size="13">🧱 防火牆：NP＋53 窿</text>
+      <rect x="12" y="40" width="216" height="70" rx="5" fill="#ffebe9" stroke="#cf222e" stroke-width="1.5"/>
+      <text x="20" y="60" font-size="11" fill="#333">🧱🧱🧱 預設拒絕 🧱🧱🧱</text>
+      <rect x="85" y="66" width="70" height="32" rx="5" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="92" y="80" font-size="11" fill="#1a7f37" font-weight="bold">窿：53 DNS</text>
+      <text x="92" y="93" font-size="10" fill="#666">egress 必留！</text>
+      <text x="12" y="130" font-size="11" fill="#333">一有 Policy 即閂門</text>
+      <text x="12" y="148" font-size="11" fill="#333">podSelector:{} = 笪晒</text>
+      <text x="12" y="170" font-size="11" fill="#666">唔留 53 窿 = 連名都</text>
+      <text x="12" y="188" font-size="11" fill="#666">解唔到，自己攬炒</text>
+      <text x="12" y="212" font-size="11" fill="#333">allow-a-to-b：只准 a➔b:80</text>
+      <text x="12" y="230" font-size="11" fill="#333">其餘全擋（Q6 模板）</text>
+      <text x="12" y="254" font-size="11" fill="#666">NetworkPolicy 兩模板背熟</text>
+    </g>
+    <g transform="translate(15,310)">
+      <rect width="240" height="300" rx="8" fill="#fff" stroke="#8250df" stroke-width="2"/>
+      <text x="12" y="28" font-weight="bold" fill="#8250df" font-size="13">🔑 2×2 RBAC 矩陣</text>
+      <rect x="82" y="40" width="70" height="24" rx="4" fill="#8250df"/>
+      <text x="88" y="56" font-size="10" fill="#fff">RoleBind</text>
+      <rect x="156" y="40" width="72" height="24" rx="4" fill="#8250df"/>
+      <text x="158" y="56" font-size="10" fill="#fff">ClusterBind</text>
+      <rect x="12" y="68" width="66" height="34" rx="4" fill="#8250df"/>
+      <text x="22" y="82" font-size="10" fill="#fff">Role</text>
+      <text x="22" y="95" font-size="9" fill="#fff">ns 級</text>
+      <rect x="82" y="68" width="70" height="34" rx="4" fill="#e6fcf0" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="90" y="83" font-size="11" fill="#1a7f37" font-weight="bold">= ns ✅</text>
+      <text x="90" y="96" font-size="9" fill="#666">Q5 呢格</text>
+      <rect x="156" y="68" width="72" height="34" rx="4" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5"/>
+      <text x="162" y="83" font-size="10" fill="#333">= 限返 ns</text>
+      <text x="162" y="96" font-size="9" fill="#666">少用</text>
+      <rect x="12" y="106" width="66" height="34" rx="4" fill="#8250df"/>
+      <text x="16" y="120" font-size="10" fill="#fff">Cluster</text>
+      <text x="22" y="133" font-size="9" fill="#fff">全叢集</text>
+      <rect x="82" y="106" width="70" height="34" rx="4" fill="#fff8e6" stroke="#9a6700" stroke-width="1.5"/>
+      <text x="90" y="121" font-size="10" fill="#333">= 限返 ns</text>
+      <text x="90" y="134" font-size="9" fill="#666">降級用</text>
+      <rect x="156" y="106" width="72" height="34" rx="4" fill="#e6f4ff" stroke="#0969da" stroke-width="1.5"/>
+      <text x="162" y="121" font-size="10" fill="#0969da" font-weight="bold">= 全叢集</text>
+      <text x="162" y="134" font-size="9" fill="#666">最大權</text>
+      <text x="12" y="162" font-size="11" fill="#333">驗收：auth can-i --as=…</text>
+      <text x="12" y="180" font-size="11" fill="#666">system:serviceaccount:ns:名</text>
+      <text x="12" y="202" font-size="11" fill="#333">Service(selector➔Endpoints</text>
+      <text x="12" y="220" font-size="11" fill="#333">➔kube-proxy)・NodePort</text>
+      <text x="12" y="238" font-size="11" fill="#333">30000–32767</text>
+      <text x="12" y="260" font-size="11" fill="#666">FQDN = svc.ns.svc.cluster.local</text>
+      <text x="12" y="280" font-size="11" fill="#666">DNS 通 ≠ 後端有料</text>
+    </g>
+    <g transform="translate(270,310)">
+      <rect width="240" height="300" rx="8" fill="#fff" stroke="#9a6700" stroke-width="2"/>
+      <text x="12" y="28" font-weight="bold" fill="#9a6700" font-size="13">🗄️ 夾萬：etcd 三步</text>
+      <rect x="70" y="40" width="100" height="70" rx="6" fill="#fff8e6" stroke="#9a6700" stroke-width="2"/>
+      <circle cx="120" cy="75" r="10" fill="none" stroke="#9a6700" stroke-width="2"/>
+      <rect x="12" y="122" width="70" height="30" rx="15" fill="#1a7f37"/>
+      <text x="20" y="141" font-size="11" fill="#fff" font-weight="bold">1 save</text>
+      <rect x="86" y="122" width="70" height="30" rx="15" fill="#0969da"/>
+      <text x="92" y="141" font-size="11" fill="#fff" font-weight="bold">2 status</text>
+      <rect x="160" y="122" width="68" height="30" rx="15" fill="#8250df"/>
+      <text x="164" y="141" font-size="11" fill="#fff" font-weight="bold">3 restore</text>
+      <text x="12" y="172" font-size="11" fill="#333">save ➔ status ➔ restore</text>
+      <text x="12" y="190" font-size="11" fill="#666">三憑證：ca / server / key</text>
+      <text x="12" y="208" font-size="11" fill="#666">路徑 /var/lib/etcd/*.db</text>
+      <text x="12" y="226" font-size="11" fill="#666">manifests 夾萬鎖匙房</text>
+      <text x="12" y="248" font-size="11" fill="#333">升級：cp 先 node 後</text>
+      <text x="12" y="266" font-size="11" fill="#333">一次一小版・drain 要</text>
+      <text x="12" y="284" font-size="11" fill="#333">--ignore-daemonsets</text>
+    </g>
+    <g transform="translate(525,310)">
+      <rect width="240" height="300" rx="8" fill="#fff" stroke="#57606a" stroke-width="2"/>
+      <text x="12" y="28" font-weight="bold" fill="#57606a" font-size="13">👻 隱形工人：Ingress</text>
+      <rect x="12" y="40" width="216" height="52" rx="5" fill="#fff" stroke="#0969da" stroke-width="1.5"/>
+      <text x="20" y="60" font-size="11" fill="#333">📜 Ingress 規則：/demo ➔ web-np:80</text>
+      <text x="20" y="78" font-size="10" fill="#666">ingressClassName: nginx（指名）</text>
+      <path d="M 120 92 L 120 112" stroke="#57606a" stroke-width="2" stroke-dasharray="5 4"/>
+      <polygon points="120,112 115,104 125,104" fill="#57606a"/>
+      <rect x="30" y="116" width="180" height="70" rx="8" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="7 4"/>
+      <text x="60" y="138" font-size="12" fill="#8c959f">👻 工人唔喺度</text>
+      <text x="45" y="158" font-size="11" fill="#8c959f">controller 未裝・本地無人做嘢</text>
+      <text x="60" y="176" font-size="11" fill="#cf222e" font-weight="bold">ADDRESS 空 = 預期！</text>
+      <text x="12" y="206" font-size="11" fill="#333">規則 = 紙・Class = 指名</text>
+      <text x="12" y="224" font-size="11" fill="#333">Controller = 工人・三件套</text>
+      <text x="12" y="246" font-size="11" fill="#666">Q10 練寫啱資源就收貨</text>
+      <text x="12" y="264" font-size="11" fill="#666">describe 無 schema 錯即過</text>
+      <text x="12" y="284" font-size="11" fill="#666">Helm 管套件・Kustomize 管差異</text>
+    </g>
+  </svg>
+  <p>點睇：<strong>磅（排位 vs 斬線）→ 電池（QoS 滿／半／吉）→ 防火牆（記得留 53 窿）→ 矩陣（邊隻鎖配邊條匙）→ 夾萬（save→status→restore）→ 隱形工人（ADDRESS 空唔使驚）</strong>。圖記得個樣，字喺下面文字版逐行對。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">全 20 課濃縮</div>
+  <pre><span class="comment"># 四控制器口訣（0004）：</span>
+Deployment 補數量、DaemonSet 補節點、Job 補失敗、CronJob 補時間
+
+<span class="comment"># Workloads（0005–0007）：</span>
+requests 排程／limits 執行；QoS：全等=Guaranteed、全冇=BestEffort
+taint 打節點、toleration 寫 Pod，效果 NoSchedule／PreferNoSchedule／NoExecute
+liveness 失敗=重啟、readiness 失敗=摘流量；HPA 前提=metrics-server+requests
+
+<span class="comment"># Config &amp; Storage（0006、0008）：</span>
+Secret base64 ≠ 加密；volume 掛載約 1 分鐘內同步、env 唔更新
+PVC 係請求、PV 係現貨、StorageClass 係工廠；RWO/ROX/RWX
+
+<span class="comment"># Networking（0009–0012）：</span>
+Service：selector→Endpoints→kube-proxy；NodePort 30000–32767
+FQDN = svc.ns.svc.cluster.local；DNS 有回應 ≠ 後端可用
+Ingress＝規則／IngressClass＝指名／Controller＝執行者
+NetworkPolicy：規則出現即預設拒絕；podSelector{}＝全選；egress 唔好漏 DNS
+
+<span class="comment"># 叢集管理（0013–0017）：</span>
+RBAC：Role×RoleBinding=ns、ClusterRole×RoleBinding=限返 ns、
+      ClusterRole×ClusterRoleBinding=全叢集；auth can-i 萬用
+etcd：save→status→restore 三模板；路徑 /etc/kubernetes/manifests、/var/lib/etcd
+升級：cp 先 node 後、一次一小版；drain --ignore-daemonsets；cordon 唔搬屋
+Helm 管套件、Kustomize 管差異；CRD 先於 CR 於 controller
+
+<span class="comment"># 除錯（0018–0019）：</span>
+get → describe → logs(→--previous) → exec
+Exit 137 = OOM；CrashLoop 睇 --previous；Pending 睇 Events
+Service 唔通：DNS→endpoints→READY→NetworkPolicy 四站檢查</pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄（最後一張）</div>
+  <p>① 時間係最大敵人：先易後難、唔好纏鬥、題目叫「apply」就 apply、叫「睇狀態」就唔好多手。② 指令唔記得參數：<code>kubectl create ... --help</code> 同 <code>kubectl explain pod.spec.containers</code> 係合法嘅官方查詢。③ 每題做完用題目畀嘅驗證方法確認一次（get／describe／logs）。④ 唔好郁 kube-system 嘅現有元件，除非題目明講。⑤ 作答喺題目指定嘅 namespace 入面，唔好開新 namespace 亂擺。唔熟字眼即刻查 <a href="../reference/glossary.html">詞彙表</a>。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你完成咗一場 10 題、60 分鐘嘅計時模擬考，仲用驗收指令自己評分。</li>
+  <li>你有張「錯題→回課」對照表，知弱點要返邊課補鑊。</li>
+  <li>你有份考前 checklist 同全 20 課濃縮小抄。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">CKA 時間策略第一原則係咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">由最尾嗰題做起</button>
+    <button class="quiz-opt">先易後難去做題</button>
+    <button class="quiz-opt">每題都要寫爆佢</button>
+    <button class="quiz-opt">淨係做最難嗰啲</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">考試唔記得 YAML 欄位，邊個指令最啱查？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kubectl explain 查</button>
+    <button class="quiz-opt">kubectl top 查用量</button>
+    <button class="quiz-opt">kubectl drain 驅逐</button>
+    <button class="quiz-opt">kubectl cordon 封鎖</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">考前衝刺用嘅官方模擬考環境係咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kind 練習場</button>
+    <button class="quiz-opt">minikube 練習場</button>
+    <button class="quiz-opt">Killer.sh 模擬場</button>
+    <button class="quiz-opt">Killercoda 練習場</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>二十課到此收工——由「咩係 Pod」到「成個叢集除錯」。之後保持練習節奏：每 1–2 星期將濃縮小抄上面嘅主題輪流實作一次，考前兩星期入 Killer.sh。報名流程超出課程範圍；當你將模擬考練到穩定過，就係報名嘅時候喇。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://training.linuxfoundation.org/certification/certified-kubernetes-administrator-cka/">CKA | Linux Foundation（官方認證頁）</a>同<a href="https://killer.sh/cka">Killer.sh CKA Simulator</a> —— 考試形式、時程同模擬環境以官方為準。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0019-troubleshooting-cluster-network.html">← 上一課：節點同網路排錯</a>
+  <a href="../reference/cka-domain-map.html">📖 考綱地圖 ➔</a>
+</div>
+</div>
+</body>
+</html>

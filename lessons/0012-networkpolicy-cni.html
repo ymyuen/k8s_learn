@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0012 — NetworkPolicy 同 CNI：叢集內防火牆</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 3 · 對應考綱：<a href="../reference/cka-domain-map.html">Services &amp; Networking（20%）</a> · 需時約 35 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第十二課 · 內部防線</span>
+  <h1>Lesson 0012：NetworkPolicy 同 CNI：叢集內防火牆</h1>
+  <p><strong>目標：</strong>搞掂叢集入面「邊個連到邊個」——親手裝 Calico、由預設全通行到 default deny 再精準放行，仲要踩一次 egress 唔記得 DNS 嘅經典氹。考場見到連線 timeout，一眼知係咪 NetworkPolicy 搞鬼！</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  0011 搞掂「外面點入嚟唔同服務」；今課守住「入面邊個掂到邊個」——<a href="../reference/glossary.html">NetworkPolicy</a> 就係 K8S 原生防火牆。最伏係：寫咗 policy 但 CNI 唔支援＝寫咗等於冇寫！搞掂「NetworkPolicy 係法例、CNI 係差人」呢條因果鏈，Phase 3 先算真正收工。
+</div>
+
+<h2>1. CNI：派 IP、接網絡嗰個人</h2>
+<p>0011 搞掂「外面流量點入唔同服務」；今課守「叢集入面邊個連到邊個」——<a href="../reference/glossary.html">NetworkPolicy</a>。佢係 K8S 原生嘅防火牆 API：宣告「邊啲來源連到邊啲 Pod 嘅邊啲 port」。但 NetworkPolicy 有個關鍵前提：<strong>要 CNI 撐先真係識擋</strong>（kindnet 唔撐）。所以今課開場會再重建叢集，裝上撐佢嘅 <a href="../reference/glossary.html">Calico</a>，順手將 <a href="../reference/glossary.html">CNI</a> 係咩一次講透。呢課之後部機 keep 住「Calico 雙節點」，0013–0014 直接沿用。</p>
+<p>每粒 Pod 都要有自己 IP、要駁入叢集網絡。做呢樣嘢嘅係一支<strong>每粒節點跑住嘅 CNI plugin</strong>：kubelet 起好 Pod 之後，嗌 CNI plugin 將個容器駁上網。CNI（Container Network Interface）就係呢個「嗌人標準」個名；唔同實作有唔同網絡模型：</p>
+<ul>
+  <li><strong>kindnet</strong>：kind 內置嘅輕量 CNI（ptp 路由式）——夠簡單，但<strong>唔識做 NetworkPolicy</strong>。</li>
+  <li><strong>Calico</strong>：老牌 CNI，用 BGP 或 VXLAN 起 Pod 網絡，仲用 iptables/eBPF <strong>執行 NetworkPolicy</strong>。</li>
+  <li><strong>其他</strong>：Cilium、Flannel（Flannel 都唔識做 NetworkPolicy）…。</li>
+</ul>
+<p>記住呢條因果鏈：<strong>NetworkPolicy 係法例、CNI 係差人</strong>。寫咗 NetworkPolicy 但 CNI 唔撐＝條例瞓喺 etcd 度、冇人執行。</p>
+
+<div class="diagram-card">
+  <h3>🛡️ NetworkPolicy 拓樸圖：邊個入到 db 房</h3>
+  <svg class="svg-diagram" viewBox="0 0 780 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NetworkPolicy topology with default and db namespaces plus egress inset">
+    <text x="20" y="24" font-size="13" font-weight="bold" fill="#0969da">上面：跨 namespace 拓樸 — 兩客搶入 db 房</text>
+    <g transform="translate(20, 35)">
+      <rect width="340" height="220" rx="10" fill="#f0f7ff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="24" font-size="13" font-weight="bold" fill="#0969da">default namespace（開放辦公室）</text>
+      <g transform="translate(15, 38)">
+        <rect width="310" height="80" rx="8" fill="#ffffff" stroke="#1a7f37" stroke-width="2"/>
+        <text x="10" y="22" font-size="12" font-weight="bold" fill="#1a7f37">frontend Pod ✅ 放行</text>
+        <text x="10" y="42" font-size="11" fill="#333">label app=frontend</text>
+        <text x="10" y="60" font-size="11" fill="#333">IP 192.168.1.10</text>
+      </g>
+      <g transform="translate(15, 128)">
+        <rect width="310" height="80" rx="8" fill="#ffffff" stroke="#cf222e" stroke-width="2"/>
+        <text x="10" y="22" font-size="12" font-weight="bold" fill="#cf222e">backend Pod ❌ 繼續擋</text>
+        <text x="10" y="42" font-size="11" fill="#333">label app=backend</text>
+        <text x="10" y="60" font-size="11" fill="#333">IP 192.168.1.11</text>
+      </g>
+    </g>
+    <g transform="translate(400, 35)">
+      <rect width="360" height="220" rx="10" fill="#fffbeb" stroke="#d4a72c" stroke-width="2.5"/>
+      <text x="12" y="24" font-size="13" font-weight="bold" fill="#633">db namespace 🔒 有 Policy 徽章</text>
+      <g transform="translate(15, 38)">
+        <rect width="330" height="80" rx="8" fill="#ffffff" stroke="#8250df" stroke-width="2"/>
+        <text x="10" y="22" font-size="12" font-weight="bold" fill="#8250df">db Pod + db Service</text>
+        <text x="10" y="42" font-size="11" fill="#333">app=db ／ ClusterIP :80</text>
+        <text x="10" y="60" font-size="11" fill="#333">🔒 deny-all（防盜門閂晒）</text>
+      </g>
+      <g transform="translate(15, 128)">
+        <rect width="330" height="80" rx="8" fill="#f6fbf7" stroke="#1a7f37" stroke-width="2"/>
+        <text x="10" y="22" font-size="12" font-weight="bold" fill="#1a7f37">🔑 allow-frontend（白名單匙）</text>
+        <text x="10" y="42" font-size="11" fill="#333">ns=default AND pod=frontend</text>
+        <text x="10" y="60" font-size="11" fill="#666">兩把鎖匙齊先開到門</text>
+      </g>
+    </g>
+    <path d="M 250 150 L 390 150" stroke="#1a7f37" stroke-width="3"/>
+    <polygon points="390,150 380,145 380,155" fill="#1a7f37"/>
+    <text x="300" y="142" font-size="14" font-weight="bold" fill="#1a7f37">✓ 200</text>
+    <path d="M 250 215 L 390 175" stroke="#cf222e" stroke-width="3"/>
+    <polygon points="390,175 380,170 380,180" fill="#cf222e"/>
+    <text x="300" y="210" font-size="14" font-weight="bold" fill="#cf222e">✗ BLOCKED</text>
+    <text x="20" y="285" font-size="13" font-weight="bold" fill="#0969da">下面：egress  inset — 出門唔記得帶 DNS 鎖匙</text>
+    <rect x="20" y="295" width="740" height="150" rx="8" fill="#f8fafc" stroke="#0969da" stroke-width="1.5"/>
+    <g transform="translate(35, 310)">
+      <rect width="340" height="120" rx="8" fill="#ffffff" stroke="#cf222e" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#cf222e">✗ frontend → kube-dns:53</text>
+      <text x="10" y="44" font-size="11" fill="#333">UDP/TCP 53 未放行</text>
+      <text x="10" y="64" font-size="11" fill="#333">連個名都解唔到</text>
+      <text x="10" y="84" font-size="11" fill="#666">唔記得 DNS＝白做</text>
+      <text x="10" y="102" font-size="11" fill="#666">wget 卡住／NXDOMAIN 感</text>
+    </g>
+    <g transform="translate(395, 310)">
+      <rect width="350" height="120" rx="8" fill="#ffffff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#1a7f37">✓ frontend → $DBIP:80</text>
+      <text x="10" y="44" font-size="11" fill="#333">TCP 80 有放行 db Pod</text>
+      <text x="10" y="64" font-size="11" fill="#333">用 IP 直連會通</text>
+      <text x="10" y="84" font-size="11" fill="#666">證明窒住嘅係 DNS</text>
+      <text x="10" y="102" font-size="11" fill="#666">補返 53 就全通</text>
+    </g>
+    <rect x="20" y="458" width="740" height="68" rx="6" fill="#fff8c5" stroke="#d4a72c" stroke-width="1.5"/>
+    <text x="35" y="482" font-size="12" fill="#633">🏢 寫字樓比喻：db 房道防盜門（deny-all）平時閂實；白名單＝門禁名單，認「邊間公司＋邊個人」；</text>
+    <text x="35" y="504" font-size="12" fill="#633">CNI（Calico）＝真係企喺門口嘅保安員——冇佢，張名單只係貼喺牆上嘅紙，唔會截人。</text>
+    <rect x="20" y="536" width="740" height="60" rx="6" fill="#fff1f2" stroke="#cf222e" stroke-width="1.5"/>
+    <text x="35" y="560" font-size="12" fill="#7a1f1f">被擋症狀＝timeout（封包直接掉咗），唔係 connection refused。認嘅係 namespace＋label，唔係 Pod 個名！</text>
+    <text x="35" y="580" font-size="12" fill="#7a1f1f">Calico 未裝好：節點 NotReady、coredns 卡 Pending、Pod 攞唔到 IP——冇 CNI 成座企唔起。</text>
+  </svg>
+  <p><strong>點讀呢幅圖：</strong>左邊兩個客一齊敲右邊道門——frontend 有兩把鎖匙（namespace＋label）所以開到，backend 少一把所以食閉門羹。下面 inset 話你知：出門（egress）嗰陣唔記得帶 DNS 嗰條鎖匙，直連 IP 通、用人名就唔通。</p>
+</div>
+
+<h2>2. NetworkPolicy 語意，唔好諗錯</h2>
+<ul>
+  <li><strong>預設全通</strong>：叢集冇 NetworkPolicy 嗰陣，任何 Pod 連到任何 Pod。規則淨會「收緊」，唔會「放寬」。</li>
+  <li><strong>空規則 ＝ 全選</strong>：<code>podSelector: {}</code> 代表嗰個 namespace 嘅<strong>所有 Pod</strong>（唔係冇規則）。</li>
+  <li><strong>policyTypes</strong>：宣告呢份規則管 <code>Ingress</code>（入嚟嘅）定 <code>Egress</code>（出去嘅）。一旦某個方向畀任何一份 policy 揀中，嗰個方向<strong>就變預設拒絕</strong>——呢個就係「default deny」嘅由來。</li>
+  <li>揀來源：<code>podSelector</code>（同 namespace 揀 Pod）、<code>namespaceSelector</code>（揀 namespace）、<code>ipBlock</code>（揀 IP 段）；<code>ports</code> 鎖死協議同 port。</li>
+</ul>
+
+<div class="terminal box">
+  <div class="box-title">default deny 兩條模板（必背）</div>
+  <pre><span class="comment"># 淨擋「入嚟嘅」：namespace 內全部 Pod 都唔收任何入站流量</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: NetworkPolicy</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: deny-all-ingress</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  podSelector: {}</span>
+<span class="prompt">  policyTypes: ["Ingress"]</span>
+
+<span class="comment"># 淨擋「出去嘅」：namespace 內全部 Pod 都唔畀對外連線</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: NetworkPolicy</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: deny-all-egress</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  podSelector: {}</span>
+<span class="prompt">  policyTypes: ["Egress"]</span></pre>
+</div>
+
+<h2>3. 實作：重建 Calico 叢集</h2>
+
+<div class="terminal box">
+  <div class="box-title">重建：disableDefaultCNI + podSubnet</div>
+  <pre><span class="comment"># 1. 0011 個 ingress 叢集要換 CNI——成座重建</span>
+<span class="prompt">kind delete cluster</span>
+
+<span class="comment"># 2. 新設定檔 kind-calico.yaml：閂咗 kindnet，pod IP 網段用 192.168.0.0/16（同 Calico 對齊）</span>
+<span class="prompt">nano kind-calico.yaml</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">kind-calico.yaml 全文</div>
+  <pre><span class="comment"># kind-calico.yaml — disableDefaultCNI 係關鍵：唔要 kindnet，陣間自己裝 Calico</span>
+<span class="prompt">kind: Cluster</span>
+<span class="prompt">apiVersion: kind.x-k8s.io/v1alpha4</span>
+<span class="prompt">nodes:</span>
+<span class="prompt">- role: control-plane</span>
+<span class="prompt">- role: worker</span>
+<span class="prompt">networking:</span>
+<span class="prompt">  disableDefaultCNI: true</span>
+<span class="prompt">  podSubnet: 192.168.0.0/16</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">起叢集：親眼睇「冇 CNI 會點」</div>
+  <pre><span class="comment"># 3. 起叢集（約 2 分鐘）</span>
+<span class="prompt">kind create cluster --config kind-calico.yaml</span>
+
+<span class="comment"># 4. 節點 NotReady！因為冇人幫 Pod 派 IP（CNI 缺席）</span>
+<span class="prompt">kubectl get nodes</span>
+
+<span class="comment"># 5. kube-system 冇 kindnet；coredns 卡 Pending（等緊 CNI 畀 IP 佢）</span>
+<span class="prompt">kubectl get pods -n kube-system</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">裝 Calico（v3.32.2 釘版，官方 kind 指南同款三支指令）</div>
+  <pre><span class="comment"># 6. Calico operator 同佢要嘅 CRD</span>
+<span class="prompt">kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/v1_crd_projectcalico_org.yaml</span>
+<span class="prompt">kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/tigera-operator.yaml</span>
+
+<span class="comment"># 7. 安裝設定：calico-system namespace 開始生 calico-node（每節點一粒）</span>
+<span class="prompt">kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/custom-resources.yaml</span>
+
+<span class="comment"># 8. 等 calico-system 啲 Pod 全部 Running（Ctrl+C 走人）</span>
+<span class="prompt">kubectl get pods -n calico-system -w</span>
+
+<span class="comment"># 9. 節點轉 Ready——CNI 到位嗰一刻</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pods -n kube-system</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 4–9 步就係 CNI 存在嘅意義：<strong>冇 CNI，節點就 NotReady、Pod 永遠攞唔到 IP</strong>。Calico 一裝好（每粒節點一粒 calico-node，諗返 0004 嘅 DaemonSet），節點即刻 Ready。由而家起 Pod 嘅 IP 係 <code>192.168.x.x</code>，NetworkPolicy 終於有人執行喇。</p>
+</div>
+
+<h2>4. 實作 A：佈三層拓樸，先確認「預設全通」</h2>
+
+<div class="terminal box">
+  <div class="box-title">frontend → backend → db 三層</div>
+  <pre><span class="comment"># 10. db 放獨立 namespace，frontend／backend 放 default（練跨 namespace）</span>
+<span class="prompt">kubectl create ns db</span>
+<span class="prompt">kubectl -n db create deployment db --image=nginx:1.25</span>
+<span class="prompt">kubectl -n db expose deployment db --port=80</span>
+<span class="prompt">kubectl rollout status deployment/db -n db</span>
+
+<span class="comment"># 11. 兩粒帶 label 嘅客 Pod（-l 指定 app label，NetworkPolicy 靠佢認 Pod）</span>
+<span class="prompt">kubectl run frontend --image=busybox:1.36 --restart=Never -l app=frontend -- sleep 3600</span>
+<span class="prompt">kubectl run backend --image=busybox:1.36 --restart=Never -l app=backend -- sleep 3600</span>
+<span class="prompt">kubectl get pods -A -o wide</span>
+<span class="comment">#    Pod IP 全部係 192.168.x.x（Calico 派嘅）</span>
+
+<span class="comment"># 12. 仲未有任何 NetworkPolicy：frontend、backend 都連到 db（預設全通）</span>
+<span class="prompt">kubectl exec frontend -- wget -qO- -T 3 http://db.db.svc.cluster.local | head -n 1</span>
+<span class="prompt">kubectl exec backend -- wget -qO- -T 3 http://db.db.svc.cluster.local | head -n 1</span>
+<span class="comment">#    兩邊都回 nginx 嘅 "Welcome" 相關字串（200 OK）</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">陣間嘅「連線失敗」要咁睇</div>
+  <pre><span class="comment"># 畀 NetworkPolicy 擋嗰陣，wget 會卡到 timeout（-T 3 等佢 3 秒就放棄）</span>
+<span class="prompt">kubectl exec frontend -- wget -qO- -T 3 http://db.db.svc.cluster.local || echo '-- BLOCKED --'</span>
+<span class="comment">#    留意：畀人擋係「timeout／冇回應」，唔係 connection refused——條規則直接掉咗個封包</span></pre>
+</div>
+
+<h2>5. 實作 B：db 嘅 default deny，再放行 frontend</h2>
+
+<div class="terminal box">
+  <div class="box-title">np-deny-db.yaml — db namespace 全部唔收站流量</div>
+  <pre><span class="comment"># np-deny-db.yaml — podSelector 空物件 = 揀中 db namespace 內所有 Pod</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: NetworkPolicy</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: deny-all</span>
+<span class="prompt">  namespace: db</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  podSelector: {}</span>
+<span class="prompt">  policyTypes: ["Ingress"]</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用之後：兩邊都入唔到去</div>
+  <pre><span class="comment"># 13. 套用 default deny</span>
+<span class="prompt">nano np-deny-db.yaml</span>
+<span class="prompt">kubectl apply -f np-deny-db.yaml</span>
+
+<span class="comment"># 14. frontend 同 backend 都連唔到 db（畀人擋 = timeout）</span>
+<span class="prompt">kubectl exec frontend -- wget -qO- -T 3 http://db.db.svc.cluster.local || echo '-- BLOCKED --'</span>
+<span class="prompt">kubectl exec backend -- wget -qO- -T 3 http://db.db.svc.cluster.local || echo '-- BLOCKED --'</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">np-allow-frontend.yaml — 放行「default namespace 掛 app=frontend 嘅 Pod」</div>
+  <pre><span class="comment"># np-allow-frontend.yaml — 重點：podSelector 淨係揀到「同 namespace」嘅來源，
+# frontend 住喺 default，所以一定要 namespaceSelector（揀 namespace）＋ podSelector（揀 Pod）</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: NetworkPolicy</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: allow-frontend</span>
+<span class="prompt">  namespace: db</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  podSelector: {}</span>
+<span class="prompt">  policyTypes: ["Ingress"]</span>
+<span class="prompt">  ingress:</span>
+<span class="prompt">  - from:</span>
+<span class="prompt">    - namespaceSelector:</span>
+<span class="prompt">        matchLabels:</span>
+<span class="prompt">          kubernetes.io/metadata.name: default</span>
+<span class="prompt">      podSelector:</span>
+<span class="prompt">        matchLabels:</span>
+<span class="prompt">          app: frontend</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用之後：frontend 返嚟，backend 繼續畀人擋</div>
+  <pre><span class="comment"># 15. 套用放行規則</span>
+<span class="prompt">nano np-allow-frontend.yaml</span>
+<span class="prompt">kubectl apply -f np-allow-frontend.yaml</span>
+
+<span class="comment"># 16. frontend 通返（佢喺 default namespace 又掛 app=frontend——兩個條件都中）</span>
+<span class="prompt">kubectl exec frontend -- wget -qO- -T 3 http://db.db.svc.cluster.local | head -n 1</span>
+
+<span class="comment"># 17. backend 仲係畀人擋（佢冇 app=frontend）</span>
+<span class="prompt">kubectl exec backend -- wget -qO- -T 3 http://db.db.svc.cluster.local || echo '-- BLOCKED --'</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 13–17 步就係「default deny ＋ 精準放行」嘅完整節奏：先落 <code>podSelector: {}</code> 嘅 deny 將所有門閂晒，再用「更準嘅 allow」開門——<strong>NetworkPolicy 係白名單思維</strong>：預設全通 → 一出現 policy 就反做預設拒絕 → 每條 allow 都係一道開好嘅門。backend 畀人擋但 frontend 通，證明條規則認嘅係 <strong>namespace＋label</strong>，唔係 Pod 個名——跨 namespace 放行嗰陣 <code>namespaceSelector</code> 嗰半最易漏。</p>
+</div>
+
+<div class="hk-callout">
+  <strong>🥁 白名單節奏三步曲（背到識背）：</strong>
+  <table>
+    <thead>
+      <tr><th>步驟</th><th>落咗咩 policy</th><th>frontend → db</th><th>backend → db</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Step 0：冇 policy</strong><br>（第 12 步）</td><td>零——預設全通</td><td>✅ 200 通</td><td>✅ 200 通</td></tr>
+      <tr><td><strong>Step 1：deny-all</strong><br>（第 13–14 步）</td><td><code>deny-all</code>（<code>podSelector: {}</code>）</td><td>❌ BLOCKED（timeout）</td><td>❌ BLOCKED（timeout）</td></tr>
+      <tr><td><strong>Step 2：allow-frontend</strong><br>（第 15–17 步）</td><td>deny-all ＋ <code>allow-frontend</code></td><td>✅ 200 返嚟</td><td>❌ BLOCKED 照擋</td></tr>
+    </tbody>
+  </table>
+  <p><strong>🧩 YAML 邏輯 callout（考場必用）：</strong>同一個 <code>from</code> 入面 <code>namespaceSelector</code>＋<code>podSelector</code> 黐埋一齊＝<strong>AND</strong>（兩把鎖匙要齊：係 default namespace <em>而且</em>係 app=frontend）。唔同 <code>-</code> 項目分開寫＝<strong>OR</strong>（任何一條中就開門）。所以 backend 住啱 default 但 label 唔啱＝AND 失敗＝照擋！記：<strong>同一格 AND、唔同格 OR</strong>。</p>
+</div>
+
+<h2>6. 實作 C：Egress 唔好唔記得 DNS（經典氹）</h2>
+<p>Ingress 管「邊個入到 db」，Egress 管「db／某粒 Pod 去到邊」。經典陷阱：你幫 Pod 設咗 egress 白名單，但唔記得放行 DNS（53/UDP 畀 kube-dns）——粒 Pod 連「解服務個名」都做唔到。實作：閂死 frontend 淨係「打到 db 嘅 80」，特登漏咗 DNS，睇佢點死，再加返。</p>
+
+<div class="terminal box">
+  <div class="box-title">frontend-egress.yaml — 淨准對外打 db:80（唔記得 DNS）</div>
+  <pre><span class="comment"># frontend-egress.yaml — 淨係准 egress 去「db namespace 入面 app=db 嘅 Pod:80」</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: NetworkPolicy</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: frontend-egress</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  podSelector:</span>
+<span class="prompt">    matchLabels:</span>
+<span class="prompt">      app: frontend</span>
+<span class="prompt">  policyTypes: ["Egress"]</span>
+<span class="prompt">  egress:</span>
+<span class="prompt">  - to:</span>
+<span class="prompt">    - namespaceSelector:</span>
+<span class="prompt">        matchLabels:</span>
+<span class="prompt">          kubernetes.io/metadata.name: db</span>
+<span class="prompt">      podSelector:</span>
+<span class="prompt">        matchLabels:</span>
+<span class="prompt">          app: db</span>
+<span class="prompt">    ports:</span>
+<span class="prompt">    - protocol: TCP</span>
+<span class="prompt">      port: 80</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用：frontend 連 DNS 都出唔到去</div>
+  <pre><span class="comment"># 18. 套用之後，frontend 連 db 個「名」都解唔到（DNS 封包畀 egress 規則掉咗）</span>
+<span class="prompt">nano frontend-egress.yaml</span>
+<span class="prompt">kubectl apply -f frontend-egress.yaml</span>
+<span class="prompt">kubectl exec frontend -- wget -qO- -T 3 http://db.db.svc.cluster.local || echo '-- DNS BLOCKED --'</span>
+
+<span class="comment"># 19. 對照組：轉用 db Pod 嘅 IP 直連（唔經 DNS）——條規則有放行 db:80，呢條應該通</span>
+<span class="prompt">DBIP=$(kubectl get pod -n db -l app=db -o jsonpath='{.items[0].status.podIP}')</span>
+<span class="prompt">echo $DBIP</span>
+<span class="prompt">kubectl exec frontend -- wget -qO- -T 3 "http://$DBIP/" | head -n 1</span>
+<span class="comment">#    直連得 ＝ 窒住嘅原因肯定係 DNS；直連都唔得 ＝ 返去查 egress 規則本身</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">整返：補上 kube-dns 嘅 53/UDP 白名單</div>
+  <pre><span class="comment"># 20. 喺 egress 清單最前面加條：准去 kube-system 嘅 kube-dns 查嘢</span>
+<span class="prompt">nano frontend-egress.yaml</span>
+<span class="comment">#    egress 底下加：
+#    - to:
+#      - namespaceSelector:
+#          matchLabels:
+#            kubernetes.io/metadata.name: kube-system
+#        podSelector:
+#          matchLabels:
+#            k8s-app: kube-dns
+#      ports:
+#      - protocol: UDP
+#        port: 53
+#      - protocol: TCP
+#        port: 53</span>
+<span class="prompt">kubectl apply -f frontend-egress.yaml</span>
+
+<span class="comment"># 21. frontend 又用到「服務名」連 db 喇</span>
+<span class="prompt">kubectl exec frontend -- wget -qO- -T 3 http://db.db.svc.cluster.local | head -n 1</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾同課尾狀態</div>
+  <pre><span class="comment"># 22. 洗走全部練習物件</span>
+<span class="prompt">kubectl delete networkpolicy --all -n db</span>
+<span class="prompt">kubectl delete networkpolicy frontend-egress</span>
+<span class="prompt">kubectl delete ns db</span>
+<span class="prompt">kubectl delete pod frontend backend</span>
+<span class="prompt">rm -f np-deny-db.yaml np-allow-frontend.yaml frontend-egress.yaml</span>
+
+<span class="comment"># 23. 課尾狀態：Calico 雙節點叢集，留返畀 0013–0014（RBAC／etcd）</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pods -A</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① NetworkPolicy 唔擋就放行；一出現 policy「畀人揀中嗰個方向」就預設拒絕。② <code>podSelector: {}</code>＝嗰個 namespace 全部 Pod；policy 有 namespace 欄，跨 namespace 用 <code>namespaceSelector</code>。③ 畀人擋嘅症狀係<strong>timeout</strong>（唔係 connection refused）——除非個 CNI 係 iptables REJECT。④ egress 唔記得 DNS 係經典考點：白名單要留 kube-dns 嘅 53/UDP（加埋 53/TCP 保險）。⑤ 規則冇生效先查三樣：CNI 撐唔撐（kindnet 唔撐）、label 打啱未、policy 嘅 namespace 啱唔啱。⑥ default deny 兩條模板（上面個框）背熟佢，考場直接改。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你重建咗 disableDefaultCNI 嘅叢集，親眼見「冇 CNI 節點唔 Ready」，仲用官方 manifest 裝好 Calico（v3.32.2）。</li>
+  <li>你起咗 frontend／backend／db 三層拓樸，見證「預設全通」同「一有規則即收緊」。</li>
+  <li>你用 default deny ＋ allow-frontend 做到「淨係放行特定來源」嘅 NetworkPolicy。</li>
+  <li>你踩過兼整返 egress 唔記得 DNS 嘅經典氹（kube-dns 53/UDP）。</li>
+</ul>
+
+<div class="diagram-card">
+  <h3>🔎 NetworkPolicy 除錯流程圖：連唔到點行</h3>
+  <svg class="svg-diagram" viewBox="0 0 780 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NetworkPolicy debug checklist flowchart">
+    <g transform="translate(230, 12)">
+      <rect width="320" height="52" rx="16" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="20" y="23" font-size="12" font-weight="bold" fill="#0969da">起點：wget timeout？</text>
+      <text x="20" y="41" font-size="11" fill="#333">先當 NetworkPolicy 嫌疑犯</text>
+    </g>
+    <text x="390" y="82" font-size="16" fill="#0969da" text-anchor="middle">▼</text>
+    <g transform="translate(180, 89)">
+      <rect width="420" height="58" rx="8" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="15" y="23" font-size="12" font-weight="bold" fill="#0969da">1. CNI 撐唔撐？（差人喺唔喺）</text>
+      <text x="15" y="42" font-size="11" fill="#333">kindnet＝唔撐；Calico Pod Running 先有得擋</text>
+    </g>
+    <text x="390" y="165" font-size="16" fill="#0969da" text-anchor="middle">▼</text>
+    <g transform="translate(180, 172)">
+      <rect width="420" height="58" rx="8" fill="#fff8c5" stroke="#d4a72c" stroke-width="2"/>
+      <text x="15" y="23" font-size="12" font-weight="bold" fill="#633">2. 用名定用 IP？（分 DNS 定後端）</text>
+      <text x="15" y="42" font-size="11" fill="#333">IP 通、名唔通＝egress 漏咗 kube-dns:53</text>
+    </g>
+    <text x="390" y="248" font-size="16" fill="#d4a72c" text-anchor="middle">▼</text>
+    <g transform="translate(180, 255)">
+      <rect width="420" height="58" rx="8" fill="#fff1f2" stroke="#cf222e" stroke-width="2"/>
+      <text x="15" y="23" font-size="12" font-weight="bold" fill="#7a1f1f">3. label＋namespace 啱唔啱？</text>
+      <text x="15" y="42" font-size="11" fill="#333">get pod --show-labels；policy 喺 db ns 未？</text>
+    </g>
+    <text x="390" y="331" font-size="16" fill="#cf222e" text-anchor="middle">▼</text>
+    <g transform="translate(180, 338)">
+      <rect width="420" height="50" rx="16" fill="#f6fbf7" stroke="#1a7f37" stroke-width="2"/>
+      <text x="15" y="22" font-size="12" font-weight="bold" fill="#1a7f37">4. AND／OR 拆返開睇 ➜ describe networkpolicy</text>
+      <text x="15" y="40" font-size="11" fill="#333">同一格 AND、唔同格 OR；port 啱唔啱？</text>
+    </g>
+  </svg>
+  <p><strong>點行呢幅圖：</strong>由上而下四問，問完先郁手改 YAML。九成瀨嘢死喺第 2 步（唔記得 DNS）同第 3 步（label／namespace 打錯）——唔好一嚟就 delete policy 話佢冇用！</p>
+</div>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">NetworkPolicy 啲規則要靠邊個嚟執行？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kube-proxy</button>
+    <button class="quiz-opt">撐佢嘅 CNI</button>
+    <button class="quiz-opt">CoreDNS</button>
+    <button class="quiz-opt">kubelet</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">podSelector 寫空物件 {} 代表揀中咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">嗰個 namespace 全部 Pod</button>
+    <button class="quiz-opt">冇任何一粒 Pod</button>
+    <button class="quiz-opt">全部 namespace 嘅 Pod</button>
+    <button class="quiz-opt">淨係 controller Pod</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">粒 Pod 設咗 egress 白名單但唔記得放行 DNS，症狀係咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">即刻拒絕連線</button>
+    <button class="quiz-opt">一切正常</button>
+    <button class="quiz-opt">解唔到個名</button>
+    <button class="quiz-opt">重啟個容器</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Phase 3 收工：Service、DNS、Ingress、NetworkPolicy 全部到位。下堂入 Phase 4（Cluster Architecture，25%）嘅權限主題：<a href="../reference/glossary.html">RBAC</a> 同 <a href="../reference/glossary.html">ServiceAccount</a>——邊個對部叢集做到咩事。部機沿用今課個 Calico 雙節點，唔使重建。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/concepts/services-networking/network-policies/">Network Policies（官方文件）</a>同<a href="https://kubernetes.io/docs/concepts/cluster-administration/networking/">Cluster Networking（官方文件，CNI 章節）</a> —— 今課嘅權威版。Network Policies 嗰篇「Default policies」細節必睇，約 15 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0011-ingress-gateway-api.html">← 上一課：Ingress 同 Gateway API</a>
+  <a href="0013-rbac-serviceaccount.html">下一課：RBAC 同 ServiceAccount ➔</a>
+</div>
+</div>
+</body>
+</html>

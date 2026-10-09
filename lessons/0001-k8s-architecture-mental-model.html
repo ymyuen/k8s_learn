@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0001 — 叢集架構與你嘅第一個 Pod</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 0 · 對應考綱：<a href="../reference/cka-domain-map.html">Cluster Architecture, Installation &amp; Configuration（25%）</a> · 需時約 15 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第一課 · 大腦同手腳</span>
+  <h1>Lesson 0001：叢集架構與你嘅第一個 Pod</h1>
+  <p><strong>目標：</strong>用香港職場比喻＋架構圖解搞清 Control Plane 同 Worker Node 分工，再親手用 kind 起個真叢集、跑出第一粒 Pod。考 CKA 排錯嗰陣，一眼睇穿邊個組件瀨嘢！</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  好多人淨係死背 <code>kubectl run</code>，一入考場見到 Worker Node <code>NotReady</code> 或者 Pod 永遠 <code>Pending</code> 就企咗喺度。搞掂呢個血脈圖，你先識得排錯！
+</div>
+
+<h2>1. 點解要「成班機器」？</h2>
+<p>你已經識 <code>docker run</code>：單機拉 image、跑 process，搞掂。但單機有三面牆，Kubernetes 生嚟就係拆牆嘅：</p>
+<ul>
+  <li><strong>故障：</strong>部機瓜咗，個 app 就跟住瓜。K8S 會喺第二部機重新拉起 Pod。</li>
+  <li><strong>伸縮：</strong>流量爆煲，單機塞唔落。K8S 話到畀新 Pod 知應該瞓邊張床。</li>
+  <li><strong>管理：</strong>幾十部機逐部 <code>ssh</code> 入去開 container？K8S 畀個單一 API 你統一管。</li>
+</ul>
+<p>一句記住：<strong>K8S 將「跑容器」由「一部機」搬到「一班機」，仲要令呢班機睇落似一部。</strong></p>
+
+<h2>2. 概念圖解：成個 Kubernetes 就係一間大公司</h2>
+
+<div class="diagram-card">
+  <h3>🏢 職場擬人化對照架構圖</h3>
+  <svg class="svg-diagram" viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg">
+    <rect x="20" y="20" width="360" height="430" rx="10" fill="#f0f7ff" stroke="#0969da" stroke-width="2" stroke-dasharray="6,6"/>
+    <text x="40" y="50" font-family="-apple-system, sans-serif" font-size="16" font-weight="bold" fill="#0969da">Control Plane（大腦／總部管理層）</text>
+    <rect x="420" y="20" width="360" height="430" rx="10" fill="#f6fbf7" stroke="#1a7f37" stroke-width="2" stroke-dasharray="6,6"/>
+    <text x="440" y="50" font-family="-apple-system, sans-serif" font-size="16" font-weight="bold" fill="#1a7f37">Worker Node（前線手腳／實幹地盤）</text>
+    <g transform="translate(50, 80)">
+      <rect width="300" height="65" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+      <text x="15" y="28" font-size="15" font-weight="bold" fill="#1d2129">kube-apiserver（前台總秘書）</text>
+      <text x="15" y="48" font-size="12" fill="#595f69">唯一核心樞紐！所有人講嘢必須經佢</text>
+    </g>
+    <g transform="translate(50, 175)">
+      <rect width="300" height="60" rx="6" fill="#ffffff" stroke="#8250df" stroke-width="1.5"/>
+      <text x="15" y="26" font-size="15" font-weight="bold" fill="#8250df">etcd（全公司唯一真理賬本）</text>
+      <text x="15" y="45" font-size="12" fill="#595f69">Key-Value 儲存；只有 apiserver 可讀寫</text>
+    </g>
+    <g transform="translate(50, 260)">
+      <rect width="300" height="60" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+      <text x="15" y="26" font-size="15" font-weight="bold" fill="#1d2129">kube-scheduler（HR 排更主任）</text>
+      <text x="15" y="45" font-size="12" fill="#595f69">Filter 邊粒 Node 有位＋Score 邊粒最fit</text>
+    </g>
+    <g transform="translate(50, 345)">
+      <rect width="300" height="60" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+      <text x="15" y="26" font-size="15" font-weight="bold" fill="#1d2129">kube-controller-manager（監察巡邏隊）</text>
+      <text x="15" y="45" font-size="12" fill="#595f69">Actual State = Desired State，死 Pod 即補</text>
+    </g>
+    <g transform="translate(450, 80)">
+      <rect width="300" height="65" rx="6" fill="#ffffff" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="15" y="28" font-size="15" font-weight="bold" fill="#1a7f37">kubelet（地盤大工頭）</text>
+      <text x="15" y="48" font-size="12" fill="#595f69">同 apiserver 接頭，指揮 CRI 起 Pod</text>
+    </g>
+    <g transform="translate(450, 175)">
+      <rect width="300" height="60" rx="6" fill="#ffffff" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="15" y="26" font-size="15" font-weight="bold" fill="#1a7f37">kube-proxy（交警／網絡導航）</text>
+      <text x="15" y="45" font-size="12" fill="#595f69">搞 iptables／IPVS，包辦 Service 轉發</text>
+    </g>
+    <g transform="translate(450, 260)">
+      <rect width="300" height="60" rx="6" fill="#ffffff" stroke="#cf222e" stroke-width="1.5"/>
+      <text x="15" y="26" font-size="15" font-weight="bold" fill="#cf222e">Container Runtime（containerd 工人）</text>
+      <text x="15" y="45" font-size="12" fill="#595f69">真正開工！Pull image、起跑 Container</text>
+    </g>
+    <g transform="translate(450, 345)">
+      <rect width="300" height="60" rx="6" fill="#ddf4ff" stroke="#0969da" stroke-width="1.5" stroke-dasharray="4,4"/>
+      <text x="15" y="26" font-size="15" font-weight="bold" fill="#0969da">Pods（實際運行嘅業務）</text>
+      <text x="15" y="45" font-size="12" fill="#595f69">一或多個 Container，共享 Network＋Storage</text>
+    </g>
+    <path d="M 350 110 L 450 110" stroke="#0969da" stroke-width="2"/>
+    <polygon points="450,110 440,105 440,115" fill="#0969da"/>
+  </svg>
+</div>
+
+<div class="diagram-card">
+  <h3>🔢 一筆請求嘅編號旅程：邊個行先、邊個唔掂邊個</h3>
+  <svg class="svg-diagram" viewBox="0 0 820 340" xmlns="http://www.w3.org/2000/svg">
+    <g font-family="-apple-system, sans-serif">
+      <g transform="translate(10, 30)">
+        <rect width="100" height="95" rx="6" fill="#fff" stroke="#0969da" stroke-width="2"/>
+        <text x="10" y="24" font-size="13" font-weight="bold" fill="#0969da">① kubectl</text>
+        <text x="10" y="45" font-size="11" fill="#333">你打指令</text>
+        <text x="10" y="62" font-size="11" fill="#333">唯一對口係</text>
+        <text x="10" y="79" font-size="11" fill="#333">apiserver</text>
+      </g>
+      <g transform="translate(122, 30)">
+        <rect width="100" height="95" rx="6" fill="#fff" stroke="#0969da" stroke-width="2"/>
+        <text x="10" y="24" font-size="13" font-weight="bold" fill="#0969da">② apiserver</text>
+        <text x="10" y="45" font-size="11" fill="#333">驗身份＋收單</text>
+        <text x="10" y="62" font-size="11" fill="#333">唯一掂到</text>
+        <text x="10" y="79" font-size="11" fill="#333">etcd 嘅人</text>
+      </g>
+      <g transform="translate(234, 30)">
+        <rect width="100" height="95" rx="6" fill="#fff" stroke="#8250df" stroke-width="2"/>
+        <text x="10" y="24" font-size="13" font-weight="bold" fill="#8250df">③ etcd 寫入</text>
+        <text x="10" y="45" font-size="11" fill="#333">記低期望：</text>
+        <text x="10" y="62" font-size="11" fill="#333">「要一粒</text>
+        <text x="10" y="79" font-size="11" fill="#333">nginx Pod」</text>
+      </g>
+      <g transform="translate(346, 30)">
+        <rect width="100" height="95" rx="6" fill="#fff" stroke="#0969da" stroke-width="2"/>
+        <text x="10" y="24" font-size="13" font-weight="bold" fill="#1d2129">④ scheduler</text>
+        <text x="10" y="45" font-size="11" fill="#333">睇住 etcd</text>
+        <text x="10" y="62" font-size="11" fill="#333">揀一粒 Node</text>
+        <text x="10" y="79" font-size="11" fill="#333">寫 bind 返去</text>
+      </g>
+      <g transform="translate(458, 30)">
+        <rect width="100" height="95" rx="6" fill="#fff" stroke="#8250df" stroke-width="2"/>
+        <text x="10" y="24" font-size="13" font-weight="bold" fill="#8250df">⑤ etcd 綁定</text>
+        <text x="10" y="45" font-size="11" fill="#333">Pod 已綁定</text>
+        <text x="10" y="62" font-size="11" fill="#333">去某 Node</text>
+        <text x="10" y="79" font-size="11" fill="#333">等 kubelet 接</text>
+      </g>
+      <g transform="translate(570, 30)">
+        <rect width="100" height="95" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+        <text x="10" y="24" font-size="13" font-weight="bold" fill="#1a7f37">⑥ kubelet</text>
+        <text x="10" y="45" font-size="11" fill="#333">watch apiserver</text>
+        <text x="10" y="62" font-size="11" fill="#333">「嘩，關我事」</text>
+        <text x="10" y="79" font-size="11" fill="#333">先至開工</text>
+      </g>
+      <g transform="translate(682, 30)">
+        <rect width="100" height="95" rx="6" fill="#fff" stroke="#cf222e" stroke-width="2"/>
+        <text x="10" y="24" font-size="13" font-weight="bold" fill="#cf222e">⑦ CRI 起貨</text>
+        <text x="10" y="45" font-size="11" fill="#333">pull image</text>
+        <text x="10" y="62" font-size="11" fill="#333">起 container</text>
+        <text x="10" y="79" font-size="11" fill="#333">回報上去</text>
+      </g>
+      <g fill="#0969da" font-size="16" font-weight="bold">
+        <text x="108" y="80">→</text>
+        <text x="220" y="80">→</text>
+        <text x="332" y="80">→</text>
+        <text x="444" y="80">→</text>
+        <text x="556" y="80">→</text>
+        <text x="668" y="80">→</text>
+      </g>
+      <path d="M 732 125 L 732 200 L 172 200 L 172 128" fill="none" stroke="#1a7f37" stroke-width="2" stroke-dasharray="6,4"/>
+      <polygon points="172,128 167,138 177,138" fill="#1a7f37"/>
+      <text x="300" y="195" font-size="12" fill="#1a7f37">⑦做完經 kubelet → apiserver → 寫返 etcd（狀態回報）</text>
+      <line x1="396" y1="230" x2="620" y2="230" stroke="#cf222e" stroke-width="2" stroke-dasharray="6,4"/>
+      <line x1="396" y1="224" x2="396" y2="236" stroke="#cf222e" stroke-width="3"/>
+      <line x1="620" y1="224" x2="620" y2="236" stroke="#cf222e" stroke-width="3"/>
+      <text x="250" y="255" font-size="12" fill="#cf222e">✘ scheduler 同 kubelet 之間冇直接箭嘴，kubelet 亦唔掂 etcd</text>
+      <text x="210" y="275" font-size="12" fill="#333">所有嘢一定要經 apiserver 傳話，etcd 得 apiserver 先掂到</text>
+      <text x="330" y="300" font-size="11" fill="#666">scheduler ✘→ kubelet（冇線）・ kubelet ✘→ etcd（冇線）</text>
+    </g>
+  </svg>
+  <p>背法：<strong>①你 → ②秘書 → ③賬本 → ④HR揀床位 → ⑤賬本寫死邊張床 → ⑥大工頭認領 → ⑦工人開工 → 報返上去</strong>。HR（scheduler）唔會 WhatsApp 大工頭（kubelet），大工頭亦唔會自己去揭賬本（etcd）。</p>
+</div>
+
+<table>
+  <thead>
+    <tr><th>角色</th><th>喺邊跑</th><th>元件</th><th>一句話職責</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td rowspan="3"><strong>Control Plane</strong><br>（大腦）</td>
+      <td rowspan="3">控制平面節點</td>
+      <td><code>kube-apiserver</code></td>
+      <td>對外唯一 API 入口，所有指令都經呢度入</td>
+    </tr>
+    <tr>
+      <td><code>etcd</code></td>
+      <td>鍵值資料庫，存放叢集<strong>所有狀態</strong>（CKA 必考備份）</td>
+    </tr>
+    <tr>
+      <td><code>kube-scheduler</code>、<code>kube-controller-manager</code></td>
+      <td>排程器揀 Node；控制器將現況推向期望狀態</td>
+    </tr>
+    <tr>
+      <td><strong>Worker Node</strong><br>（手腳）</td>
+      <td>工作節點</td>
+      <td><code>kubelet</code>、<code>kube-proxy</code>、Container Runtime</td>
+      <td>kubelet 保證容器照規格跑；kube-proxy 實作 Service 網路規則</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>關鍵心法：<strong>你（經 kubectl）永遠只同 kube-apiserver 傾偈</strong>。apiserver 驗完你身份，將期望狀態寫入 etcd，其他元件睇住 etcd 各自開工。呢個叫「宣告式」（declarative）：你宣告「我要 3 個 nginx」，排程、啟動、自癒唔使你理。</p>
+
+<div class="terminal box">
+  <div class="box-title">一筆請求嘅生命旅程</div>
+  <pre>你打 <span class="prompt">kubectl run nginx --image=nginx</span>
+→ kube-apiserver（驗證身份、寫入 etcd）
+→ kube-scheduler（揀一粒 Node，寫返入 etcd）
+→ 嗰粒 Node 嘅 kubelet（叫 container runtime 起容器）
+→ 回報狀態畀 apiserver → 存返入 etcd</pre>
+</div>
+
+<table>
+  <thead>
+    <tr><th></th><th><code>docker run</code>（單機）</th><th><code>kubectl run</code>（成班機）</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>打指令畀邊個</strong></td><td>直接畀呢部機嘅 Docker daemon</td><td>只畀 kube-apiserver，全叢集唯一入口</td></tr>
+    <tr><td><strong>狀態記喺邊</strong></td><td>記喺呢部機自己（冇中央賬本）</td><td>記喺 etcd，全公司唯一真理賬本</td></tr>
+    <tr><td><strong>邊個揀機</strong></td><td>冇得揀，就係呢部機</td><td>scheduler 幫你揀最 fit 嘅 Node</td></tr>
+    <tr><td><strong>機死點</strong></td><td>機瓜＝app 跟住瓜，自己重開</td><td>控制器見數唔啱，喺第二部機自動補返粒</td></tr>
+  </tbody>
+</table>
+
+<p>一句記：<code>docker run</code> 係「你親手開一部機嘅一個 container」；<code>kubectl run</code> 係「你同秘書落單，成間公司幫你搵位、開工、包善後」。</p>
+
+<h2>3. 終端機實作：起叢集、跑第一粒 Pod</h2>
+<p>理論夠喇——郁手。我哋用 <a href="https://kind.sigs.k8s.io/">kind</a>（Kubernetes in Docker）起個真叢集，唔使掂雲。</p>
+
+<div class="warn box">
+  <div class="box-title">環境準備（只做一次）</div>
+  <p>你部 Mac 已有 <code>brew</code> 同 <code>kind</code>。補齊 kubectl 同容器運行時：<code>brew install kubectl</code>、<code>brew install colima docker</code> 後 <code>colima start</code>。跟住 <code>kind --version</code>、<code>kubectl version --client</code> 確認見到版號。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">指令清單（照住打）</div>
+  <pre><span class="comment"># 1. 起叢集（約 2 分鐘）。唔帶 config 係單節點——
+#    嗰粒 Node 同時係 control-plane 兼 worker</span>
+<span class="prompt">kind create cluster --name cka-lab</span>
+
+<span class="comment"># 2. 睇 Node——得 kind-control-plane 一粒，ROLE 係 control-plane</span>
+<span class="prompt">kubectl get nodes</span>
+
+<span class="comment"># 3. 跑出第一粒 Pod</span>
+<span class="prompt">kubectl run nginx --image=nginx</span>
+
+<span class="comment"># 4. 睇 Pod 狀態（等佢變 Running）</span>
+<span class="prompt">kubectl get pods</span>
+<span class="prompt">kubectl get pods -o wide</span>
+
+<span class="comment"># 5. 睇細節——事件、IP、容器狀態喺晒度</span>
+<span class="prompt">kubectl describe pod nginx</span>
+
+<span class="comment"># 6. 收工清理（留返乾淨場畀下一課）</span>
+<span class="prompt">kubectl delete pod nginx</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p><code>get pods</code> 嘅 READY 由 <code>0/1</code> 變 <code>1/1</code>、STATUS 由 <code>ContainerCreating</code> 變 <code>Running</code>。<code>describe</code> 碌到最底 <strong>Events</strong> 會寫低 Pull image → Started 嘅全過程——90% 排錯線索都匿喺呢度。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">選配：真正嘅一主一從（雙節點）</div>
+  <pre><span class="comment"># kind-config.yaml</span>
+<span class="prompt">kind: Cluster</span>
+<span class="prompt">apiVersion: kind.x-k8s.io/v1alpha4</span>
+<span class="prompt">nodes:</span>
+<span class="prompt">- role: control-plane</span>
+<span class="prompt">- role: worker</span>
+
+<span class="comment"># 重新起（會洗走舊嘢，約 2 分鐘）</span>
+<span class="prompt">kind delete cluster --name cka-lab</span>
+<span class="prompt">kind create cluster --name cka-lab --config kind-config.yaml</span>
+<span class="prompt">kubectl get nodes   # 呢次有 kind-control-plane＋kind-worker 兩粒</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">課前預告：點解單節點都跑到 Pod？</div>
+  <p>諗下蘭桂坊門口保安咁：平時管理層樓層係 VIP 房，門口阿哥見你冇 VIP 卡就唔畀你入；而家你單機試玩，酒吧暫時人少，保安鬆手放你入去坐咗先。記住呢個怪現象，0005先解釋。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>CKA 准查官方文件，但唔准嘥時間。練到「<code>kubectl run</code>／<code>get</code>／<code>describe</code>」變反射動作。縮寫記住：<code>po</code>（pods）、<code>ns</code>（namespaces）、<code>no</code>（nodes）。千祈唔好以為 etcd 會同 scheduler／kubelet 直接傾偈——<strong>全叢集得 apiserver 掂到 etcd</strong>。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你講得出 control-plane 同 worker 嘅分工，同埋邊個揸住叢集狀態。</li>
+  <li>你用 kind 起咗個真叢集，跑出、睇過、刪走第一粒 Pod。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">邊個係叢集對外 API 嘅唯一入口？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kube-proxy</button>
+    <button class="quiz-opt">kube-scheduler</button>
+    <button class="quiz-opt">kube-apiserver</button>
+    <button class="quiz-opt">kube-controller-manager</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Pod 意外消失之後，邊個負責拉返起佢？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">控制器</button>
+    <button class="quiz-opt">排程器</button>
+    <button class="quiz-opt">儲存庫</button>
+    <button class="quiz-opt">節點層</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="3">
+  <p class="quiz-q">叢集嘅全部狀態擺喺邊個元件？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kubelet</button>
+    <button class="quiz-opt">kube-apiserver</button>
+    <button class="quiz-opt">Container Runtime</button>
+    <button class="quiz-opt">etcd</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>裸 Pod 好脆弱——你刪走佢就真係冇咗。下一課我哋用 Deployment 包住 Pod，等「Pod 死咗自己生返」變成理所當然。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-architecture-reference.html">架構速查表</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/concepts/overview/components/">Kubernetes Components（官方文件）</a> —— 本課表格嘅權威版，建議花 10 分鐘讀一遍。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="../reference/cka-architecture-reference.html">📖 架構速查表</a>
+  <a href="0002-imperative-kubectl-and-hands-on-lab.html">下一課：Deployment 自癒 ➔</a>
+</div>
+</div>
+</body>
+</html>

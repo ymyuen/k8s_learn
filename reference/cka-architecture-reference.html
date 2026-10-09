@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <title>CKA 核心架構速查指南 (Architecture Reference Sheet)</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.95rem; }
+    th, td { border: 1px solid var(--border); padding: 0.6rem 0.8rem; text-align: left; }
+    th { background: var(--code-bg); font-weight: 600; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <header class="lesson-header">
+    <span class="badge">Cheat Sheet / Reference</span>
+    <h1>Kubernetes 核心架構與組件功能速查 (CKA 必備)</h1>
+    <p>呢份係你平時溫書同做 Lab 必備嘅速查表，將 Control Plane 同 Worker Node 各大組件職責、通訊路徑同故障特徵濃縮晒喺度。</p>
+  </header>
+
+  <h2>1. 組件速查表</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>組件名稱</th>
+        <th>身處位置</th>
+        <th>生活化比喻 (香港職場版)</th>
+        <th>核心職責 (CKA 核心)</th>
+        <th>死咗會點？ (故障特徵)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>kube-apiserver</strong></td>
+        <td>Control Plane</td>
+        <td>前台接待處兼總秘書長</td>
+        <td>全 Cluster 唯一暴露 REST API、認證/授權/準入控制、直通 etcd 嘅組件</td>
+        <td>全部 <code>kubectl</code> 玩完、整個 cluster 癱瘓无法接收新指令</td>
+      </tr>
+      <tr>
+        <td><strong>etcd</strong></td>
+        <td>Control Plane</td>
+        <td>全公司唯一最高機密賬本</td>
+        <td>分散式 key-value storage，儲存 cluster 所有狀態與 manifest</td>
+        <td>集群失憶、所有組件無法讀寫最新狀態（高危災難）</td>
+      </tr>
+      <tr>
+        <td><strong>kube-scheduler</strong></td>
+        <td>Control Plane</td>
+        <td>HR 排更主任</td>
+        <td>過濾 (Filter) 及打分 (Score)，決定 Pod 分配去邊粒 Worker Node</td>
+        <td>Pod 永遠卡喺 <code>Pending</code> 狀態</td>
+      </tr>
+      <tr>
+        <td><strong>kube-controller-manager</strong></td>
+        <td>Control Plane</td>
+        <td>各部門巡邏監察隊</td>
+        <td>運行 Node, Deployment, ReplicaSet 等 controllers，確保實際狀態 = 期望狀態</td>
+        <td>Pod 死咗唔識自癒重啟、副本數量對唔齊</td>
+      </tr>
+      <tr>
+        <td><strong>kubelet</strong></td>
+        <td>Worker Node</td>
+        <td>地盤包頭（Node 工頭）</td>
+        <td>同容器運行時 (CRI) 溝通、管理 Pod 生命週期、定時向上回報 Node 狀態</td>
+        <td>Node 變 <code>NotReady</code>、Pod 無法啟動或停止</td>
+      </tr>
+      <tr>
+        <td><strong>kube-proxy</strong></td>
+        <td>Worker Node</td>
+        <td>交通交警（網絡轉發）</td>
+        <td>維護節點網絡規則 (iptables/IPVS)，實現 Service IP 負載均衡與流量轉發</td>
+        <td>ClusterIP 唔通、Service 路由失效但 Pod IP 仍可直連</td>
+      </tr>
+      <tr>
+        <td><strong>Container Runtime (containerd)</strong></td>
+        <td>Worker Node</td>
+        <td>工人（真正落手做嘢）</td>
+        <td>拉取鏡像、啟動並運行容器（如 containerd, CRI-O）</td>
+        <td>容器無法 pull image、或者 run 唔起</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2. 考試快速診斷心法 (30 秒排錯定律)</h2>
+  <div class="hk-callout">
+    <strong>CKA 考試口訣：</strong>
+    <ul>
+      <li>Pod 卡喺 <code>Pending</code> ➜ 睇 <code>kube-scheduler</code> 或 Node 資源/Taints</li>
+      <li>Pod 卡喺 <code>ContainerCreating</code> / <code>ImagePullBackOff</code> ➜ 睇 <code>kubelet</code>, containerd 或網絡 CNI</li>
+      <li>Node 變成 <code>NotReady</code> ➜ 睇 Worker Node 上面嘅 <code>systemctl status kubelet</code></li>
+      <li>Service 唔通但 Pod 直通 ➜ 睇 <code>kube-proxy</code> 同埋 iptables 規則</li>
+    </ul>
+  </div>
+
+  <div class="lesson-nav">
+    <a href="../lessons/0001-k8s-architecture-mental-model.html">← 返回第 0001 課 Lesson</a>
+    <a href="../MISSION.md">查看 Mission 目標</a>
+  </div>
+</div>
+</body>
+</html>

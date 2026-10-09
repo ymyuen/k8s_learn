@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0007 — Probes 同 HPA：工作負載嘅自保同自動擴縮</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 2 · 對應考綱：<a href="../reference/cka-domain-map.html">Workloads &amp; Scheduling（15%）</a> · 需時約 30 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第七課 · 識得自己救自己</span>
+  <h1>Lesson 0007：Probes 同 HPA</h1>
+  <p><strong>目標：</strong>搞掂三種 Probe（liveness／readiness／startup）同 HPA 自動加減副本，親手睇下重啟、READY 0/1 同 CPU 爆煲點樣長胖，排錯唔再企喺度！</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  上一課啲 Pod 攞啱設定，而家要佢哋識得「自己照顧自己」。貼地講：隻 app 卡死咗邊個殺佢重嚟？未 warm up 好點樣唔好派客畀佢？流量爆煲點自動加機？呢啲正正係 Troubleshooting（30%）最鍾意考嘅症狀！
+</div>
+
+<p>上堂將設定交咗畀 Pod；今課等 Pod「識得照顧自己」：① <a href="../reference/glossary.html">Probe（探針）</a>等 kubelet 睇得出隻容器係「生勾勾但病咗」定係「搞掂可以接客」；② <a href="../reference/glossary.html">HPA</a>（HorizontalPodAutoscaler）等 Deployment 嘅副本數跟住 CPU 用量自動加減。兩個都係 CKA Workloads 領域嘅常客，而且探針寫錯搞出嚟嘅「READY 0/1」「CrashLoopBackOff」正正係 Troubleshooting 最愛出嘅題。本課個 cluster 沿用之前雙節點，開場乾淨晒。</p>
+
+<h2>1. 三種探針：生勾勾、接唔接得、等大個</h2>
+<p>Pod 嘅 <code>spec.containers[].</code> 下面可以掛三種探針，kubelet 照 <code>periodSeconds</code> 週期性去探、失敗超過 <code>failureThreshold</code> 次就出手：</p>
+
+<table>
+  <thead>
+    <tr><th>探針</th><th>問緊咩</th><th>失敗咩後果</th><th>典型用途</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>livenessProbe</strong><br>（生勾勾咩）</td>
+      <td>隻容器仲生勾勾、冇卡死？</td>
+      <td><strong>殺咗隻容器再重啟</strong></td>
+      <td>捉死結、記憶體漏水後冇反應</td>
+    </tr>
+    <tr>
+      <td><strong>readinessProbe</strong><br>（接得客咩）</td>
+      <td>隻容器接唔接得流量？</td>
+      <td>喺 Service 嘅 Endpoints <strong>摘走</strong>（唔重啟）</td>
+      <td>起動慢、要 warm up 或者載大 model 嘅 service</td>
+    </tr>
+    <tr>
+      <td><strong>startupProbe</strong><br>（等大個咩）</td>
+      <td>隻容器起好未？</td>
+      <td>失敗照 <code>restartPolicy</code> 處理；成功之前<strong>唔跑另外兩種探針</strong></td>
+      <td>要起好耐嘅容器（唔好畀 liveness 誤殺）</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>三種探針都有三種寫法：<code>exec</code>（走條 command 睇 exit code）、<code>httpGet</code>（HTTP GET 睇 2xx/3xx）、<code>tcpSocket</code>（TCP 駁唔駁到）。記住口訣：<strong>liveness 失敗＝重啟；readiness 失敗＝暫時唔好派客嚟；startup 等佢大個先。</strong></p>
+
+<div class="diagram-card">
+  <h3>🩺 三探針分工圖：kubelet 醫生巡房</h3>
+  <p style="margin:0 0 8px;color:#57534e;font-size:13px;">記住方向：永遠係 kubelet 左邊出發，探右邊嘅 Pod。後果兩條路完全唔同。</p>
+  <svg viewBox="0 0 720 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="kubelet doctor probing Pod diagram" style="width:100%;background:#f8fafc;border-radius:8px;">
+    <rect x="16" y="20" width="200" height="210" rx="10" fill="#f0fdf4" stroke="#1a7f37" stroke-width="2"/>
+    <text x="28" y="48" font-size="14" font-weight="bold" fill="#1a7f37">🩺 kubelet 醫生</text>
+    <text x="28" y="70" font-size="12" fill="#57534e">企喺 LEFT 主動出發</text>
+    <text x="28" y="90" font-size="12" fill="#334155">exec / httpGet</text>
+    <text x="28" y="108" font-size="12" fill="#334155">tcpSocket</text>
+    <text x="28" y="128" font-size="12" fill="#334155">periodSeconds 週期探</text>
+    <text x="28" y="146" font-size="12" fill="#334155">failureThreshold 次</text>
+    <text x="28" y="164" font-size="12" fill="#334155">先判死刑</text>
+    <text x="28" y="186" font-size="11" fill="#64748b">方向：kubelet → Pod</text>
+    <rect x="300" y="20" width="404" height="210" rx="10" fill="#ffffff" stroke="#1d2129" stroke-width="2"/>
+    <text x="316" y="48" font-size="14" font-weight="bold" fill="#1d2129">Pod 容器（RIGHT 被探）</text>
+    <text x="316" y="68" font-size="12" fill="#57534e">nginx / busybox</text>
+    <rect x="316" y="80" width="372" height="36" rx="6" fill="#fef2f2" stroke="#cf222e" stroke-width="1.5"/>
+    <text x="326" y="103" font-size="12" font-weight="bold" fill="#cf222e">liveness：生勾勾咩？</text>
+    <rect x="316" y="122" width="372" height="36" rx="6" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+    <text x="326" y="145" font-size="12" font-weight="bold" fill="#92400e">readiness：接得客咩？</text>
+    <rect x="316" y="164" width="372" height="36" rx="6" fill="#eff6ff" stroke="#0969da" stroke-width="1.5"/>
+    <text x="326" y="187" font-size="12" font-weight="bold" fill="#0969da">startup：等大個咩？未完就等</text>
+    <path d="M216 120 L300 120" stroke="#1a7f37" stroke-width="3"/>
+    <text x="244" y="112" font-size="12" font-weight="bold" fill="#1a7f37">探 ▶</text>
+    <path d="M400 230 L150 250" stroke="#cf222e" stroke-width="3"/>
+    <text x="230" y="248" font-size="12" font-weight="bold" fill="#cf222e">🔴 殺＋重啟</text>
+    <rect x="16" y="258" width="330" height="90" rx="10" fill="#fef2f2" stroke="#cf222e" stroke-width="2"/>
+    <text x="28" y="284" font-size="12" font-weight="bold" fill="#cf222e">liveness 失敗 → 紅色殺機</text>
+    <text x="28" y="304" font-size="12" fill="#334155">殺咗隻容器再重啟</text>
+    <text x="28" y="322" font-size="12" fill="#334155">RESTARTS 向上加 🔴</text>
+    <path d="M600 230 L580 250" stroke="#d97706" stroke-width="3"/>
+    <text x="480" y="248" font-size="12" font-weight="bold" fill="#92400e">🟡 拔 Service 線</text>
+    <rect x="374" y="258" width="330" height="90" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+    <text x="386" y="284" font-size="12" font-weight="bold" fill="#92400e">readiness 失敗 → 黃色拔線</text>
+    <text x="386" y="304" font-size="12" fill="#334155">喺 Endpoints 摘走，唔重啟</text>
+    <text x="386" y="322" font-size="12" fill="#334155">READY 0/1，唔派流量 🟡</text>
+    <rect x="16" y="364" width="688" height="180" rx="10" fill="#eff6ff" stroke="#0969da" stroke-width="2"/>
+    <text x="28" y="390" font-size="13" font-weight="bold" fill="#0969da">⏱ startup 時間線 0–45s（startup-demo 現場）</text>
+    <text x="28" y="412" font-size="12" fill="#334155">0–45s：/tmp/started 未出現 → startup 一直 fail → liveness 瞓緊覺（唔開跑）</text>
+    <text x="28" y="432" font-size="12" fill="#334155">呢段：READY 0/1 · RESTARTS 0 · Events 狂出 Startup probe failed（正常，唔使驚）</text>
+    <text x="28" y="452" font-size="12" fill="#334155">45s：touch /tmp/started，個檔出現 → startup 過關 → liveness 接手</text>
+    <text x="28" y="472" font-size="12" fill="#334155">之後：Events 靜返 → READY 1/1 · RESTARTS 仲係 0（冇人畀人誤殺）✓</text>
+    <text x="28" y="494" font-size="11" fill="#64748b">冇 startup 嘅年代：liveness 一早開跑，慢啟動 = 啟動到一半畀人殺。</text>
+    <text x="28" y="512" font-size="11" fill="#64748b">有 startup：liveness 要等大個，先至開工。</text>
+  </svg>
+</div>
+
+<h2>2. HPA：CPU 一高就加副本</h2>
+<p>HPA 係一個控制器，週期性問 metrics API「呢班 Pod 平均 CPU 用咗幾多」，除以「每粒 Pod 申報嘅 <code>requests.cpu</code>」得出利用率百分比，超過 <code>targetCPUUtilizationPercentage</code>（例如 50%）就調高 Deployment 副本數。前提有二：</p>
+<ul>
+  <li>個 cluster 裝咗 <strong><a href="../reference/glossary.html">metrics-server</a></strong>（收齊節點同 Pod 用量，餵畀 metrics API）——本課實作 C 會裝。</li>
+  <li>Pod 有寫 <code>resources.requests.cpu</code>——冇寫就冇分母，HPA 計唔到百分比（TARGETS 顯示 <code>&lt;unknown&gt;</code>）。</li>
+</ul>
+<p>縮返落嚟另有冷卻邏輯：連續幾輪都低過目標先縮，唔好彈上彈落（flapping）。HPA 只搞「副本數」；Pod 本身食幾多資源唔關佢事。</p>
+
+<div class="diagram-card">
+  <h3>🥤 HPA 計數杯：80m ÷ 100m = 80% &gt; 50% 即加機</h3>
+  <p style="margin:0 0 8px;color:#57534e;font-size:13px;">HPA 條數好簡單：實際用量 ÷ 你申報嘅 requests。有分母先計到數。</p>
+  <svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="HPA fraction cup visual" style="width:100%;background:#f8fafc;border-radius:8px;">
+    <rect x="16" y="20" width="220" height="150" rx="10" fill="#eff6ff" stroke="#0969da" stroke-width="2"/>
+    <text x="28" y="46" font-size="12" font-weight="bold" fill="#0969da">🥤 杯：實際用量 80m</text>
+    <rect x="28" y="58" width="196" height="70" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+    <rect x="28" y="74" width="157" height="54" fill="#0969da" opacity="0.7"/>
+    <text x="28" y="146" font-size="12" fill="#334155">容量 = requests 100m</text>
+    <text x="28" y="162" font-size="11" fill="#64748b">80 ÷ 100 = 80%</text>
+    <rect x="260" y="20" width="200" height="150" rx="10" fill="#faf5ff" stroke="#8250df" stroke-width="2"/>
+    <text x="272" y="46" font-size="12" font-weight="bold" fill="#8250df">目標線：50%</text>
+    <text x="272" y="66" font-size="12" fill="#334155">80% &gt; 50% → 超標！</text>
+    <text x="272" y="86" font-size="12" fill="#334155">HPA：加 1 粒 Pod ➕</text>
+    <text x="272" y="106" font-size="12" fill="#334155">1 → 2 → 3 …（max 5）</text>
+    <text x="272" y="126" font-size="11" fill="#64748b">快加：15–30s 就出手</text>
+    <rect x="484" y="20" width="220" height="150" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+    <text x="496" y="46" font-size="12" font-weight="bold" fill="#92400e">&lt;unknown&gt; 即係咩？</text>
+    <text x="496" y="66" font-size="12" fill="#334155">= 無分母，或者侍應未返工</text>
+    <text x="496" y="86" font-size="11" fill="#334155">① Pod 冇寫 requests.cpu</text>
+    <text x="496" y="104" font-size="11" fill="#334155">② metrics-server 未有料</text>
+    <text x="496" y="124" font-size="11" fill="#64748b">查次序：top 有冇數 → requests</text>
+    <path d="M236 95 L260 95" stroke="#0969da" stroke-width="2"/>
+    <path d="M460 95 L484 95" stroke="#8250df" stroke-width="2"/>
+    <text x="16" y="192" font-size="12" fill="#334155">加機快、收機慢：加壓即加，冇壓要連續幾輪低先縮（cooldown 防彈上彈落）。</text>
+    <text x="16" y="210" font-size="11" fill="#64748b">口訣：杯滿過線就加機；縮機要排隊慢慢嚟。</text>
+  </svg>
+</div>
+
+<h2>3. 實作 A：liveness 故意失敗 → 睇住佢重啟</h2>
+
+<div class="terminal box">
+  <div class="box-title">liveness-demo.yaml — 30 秒後自己「裝死」</div>
+  <pre><span class="comment"># liveness-demo.yaml — 容器先摸出 /tmp/healthy，30 秒後把它刪掉</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: liveness-demo</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: busybox:1.36</span>
+<span class="prompt">    command: ["sh", "-c", "touch /tmp/healthy; sleep 30; rm -f /tmp/healthy; sleep 600"]</span>
+<span class="prompt">    livenessProbe:</span>
+<span class="prompt">      exec:</span>
+<span class="prompt">        command: ["cat", "/tmp/healthy"]</span>
+<span class="prompt">      initialDelaySeconds: 5</span>
+<span class="prompt">      periodSeconds: 5</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用、觀察、看事件</div>
+  <pre><span class="comment"># 1. 套用後先看它 Running（前 30 秒檔案還在，探針成功）</span>
+<span class="prompt">nano liveness-demo.yaml</span>
+<span class="prompt">kubectl apply -f liveness-demo.yaml</span>
+<span class="prompt">kubectl get pod liveness-demo</span>
+
+<span class="comment"># 2. -w 持續看：約 30 秒後 RESTARTS 開始往上加</span>
+<span class="prompt">kubectl get pod liveness-demo -w</span>
+<span class="comment">#    每失敗一次就重啟一次，重啟太密集會看到 CrashLoopBackOff</span>
+
+<span class="comment"># 3. describe 看事件鏈：Liveness probe failed → Killing → 重新 Created</span>
+<span class="prompt">kubectl describe pod liveness-demo</span>
+<span class="comment">#    Events 會出現 "Liveness probe failed" 與 "Container liveness-demo died"</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">修復：把裝死的那行刪掉</div>
+  <pre><span class="comment"># 4. nano 編輯：command 改回只做 sleep（拿掉 rm -f /tmp/healthy）
+#    注意：Pod 的 command／探針欄位一旦建立就「不可改」——直接刪掉重套最快</span>
+<span class="prompt">nano liveness-demo.yaml</span>
+<span class="prompt">kubectl delete pod liveness-demo</span>
+<span class="prompt">kubectl apply -f liveness-demo.yaml</span>
+
+<span class="comment"># 5. 重新建立後 RESTARTS 停在 0，不再重啟</span>
+<span class="prompt">kubectl get pod liveness-demo</span>
+
+<span class="comment"># 6. 觀察夠了，收掉</span>
+<span class="prompt">kubectl delete pod liveness-demo</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 2–3 步就係「liveness 失敗＝重啟」嘅現場：隻容器明明仲跑緊（process 未退出），但 kubelet 判佢「唔健康」就成粒砍咗重嚟。呢個就係 CrashLoopBackOff 嘅成因之一——唔係隻程式炒，係探針判佢死。第 4 步「Pod 起咗之後探針欄位改唔到」都係考點嚟。</p>
+</div>
+
+<h2>4. 實作 B：readiness 打錯 port → READY 0/1</h2>
+
+<div class="terminal box">
+  <div class="box-title">readiness-demo.yaml — 探測一個沒有服務的 port</div>
+  <pre><span class="comment"># readiness-demo.yaml — nginx 只聽 80，readiness 卻去戳 8080</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: readiness-demo</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: nginx:1.25</span>
+<span class="prompt">    readinessProbe:</span>
+<span class="prompt">      httpGet:</span>
+<span class="prompt">        path: /</span>
+<span class="prompt">        port: 8080</span>
+<span class="prompt">      initialDelaySeconds: 3</span>
+<span class="prompt">      periodSeconds: 3</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">套用：容器活著，但 READY 0/1</div>
+  <pre><span class="comment"># 7. 套用後看：STATUS = Running，但 READY = 0/1</span>
+<span class="prompt">nano readiness-demo.yaml</span>
+<span class="prompt">kubectl apply -f readiness-demo.yaml</span>
+<span class="prompt">kubectl get pod readiness-demo</span>
+
+<span class="comment"># 8. describe 看 Events：readiness 探測 8080 失敗</span>
+<span class="prompt">kubectl describe pod readiness-demo</span>
+<span class="comment">#    "Readiness probe failed"——容器沒被殺掉，只是被標成不 Ready</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">修復：port 改回 80</div>
+  <pre><span class="comment"># 9. nano 把 8080 改成 80</span>
+<span class="prompt">nano readiness-demo.yaml</span>
+<span class="prompt">kubectl delete pod readiness-demo</span>
+<span class="prompt">kubectl apply -f readiness-demo.yaml</span>
+
+<span class="comment"># 10. READY 1/1——修好了</span>
+<span class="prompt">kubectl get pod readiness-demo</span>
+
+<span class="comment"># 11. 收掉</span>
+<span class="prompt">kubectl delete pod readiness-demo</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 7 步個 READY 0/1 就係「liveness 同 readiness 分家」嘅最佳教材：隻容器冇畀人重啟（liveness 冇寫就當過），但 Service 唔會派流量畀佢。下一課學 Service 嗰陣，呢粒 READY 0/1 嘅 Pod 就會直接喺 Endpoints 消失——而家記住「READY 分母唔滿＝有探針瀨嘢」就得。整返好 READY 即刻彈返 1/1。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">startup-demo.yaml — 慢啟動容器 + startupProbe 護航</div>
+  <pre><span class="comment"># startup-demo.yaml — 容器要 45 秒才「啟動完成」，startupProbe 先擋著、liveness 暫不開跑（參考寫法，不動本課步驟）</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: startup-demo</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: busybox:1.36</span>
+<span class="prompt">    command: ["sh", "-c", "sleep 45; touch /tmp/started; sleep 600"]</span>
+<span class="prompt">    startupProbe:</span>
+<span class="prompt">      exec:</span>
+<span class="prompt">        command: ["cat", "/tmp/started"]</span>
+<span class="prompt">      periodSeconds: 5</span>
+<span class="prompt">      failureThreshold: 12      # 啟動預算 = 12 × 5 秒 = 60 秒，遠大於 45 秒的啟動時間</span>
+<span class="prompt">    livenessProbe:</span>
+<span class="prompt">      exec:</span>
+<span class="prompt">        command: ["cat", "/tmp/started"]</span>
+<span class="prompt">      periodSeconds: 5</span>
+<span class="comment">#    關鍵：liveness 沒寫 initialDelaySeconds。startup 成功前 liveness／readiness 都不跑，
+#    所以慢啟動不會被誤殺；startup 一成功，liveness 立刻接手。沒有 startupProbe 的年代，
+#    只能用 initialDelaySeconds 猜啟動時間——猜太短＝啟動到一半被殺（小抄 ② 的症狀）。</span>
+
+<span class="comment"># 想親眼看（約 2 分鐘，非本課編號步驟）：</span>
+<span class="prompt">nano startup-demo.yaml</span>
+<span class="prompt">kubectl apply -f startup-demo.yaml</span>
+<span class="prompt">kubectl get pod startup-demo -w</span>
+<span class="comment">#    前 45 秒：READY 0/1、RESTARTS 0——startup 還在等，沒有人被殺</span>
+<span class="prompt">kubectl describe pod startup-demo</span>
+<span class="comment">#    Events 連續幾次 "Startup probe failed"，45 秒後歸於安靜；READY 轉 1/1</span>
+<span class="prompt">kubectl delete pod startup-demo</span>
+<span class="prompt">rm -f startup-demo.yaml</span></pre>
+</div>
+
+<h2>5. 實作 C：裝 metrics-server + HPA 現場擴縮</h2>
+<p>metrics-server 係成個 cluster 嘅「用量收數佬」，HPA 同 <code>kubectl top</code> 都靠佢。裝咗先（今課裝完留返，之後啲課要用 <code>top</code>）：</p>
+
+<div class="terminal box">
+  <div class="box-title">安裝 metrics-server（kind 需加一個參數）</div>
+  <pre><span class="comment"># 12. 官方 manifest（latest release 的 components.yaml）</span>
+<span class="prompt">kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml</span>
+
+<span class="comment"># 13. kind 的 kubelet 沒設 TLS 認證——加 --kubelet-insecure-tls（只有本機測試叢集這樣做）</span>
+<span class="prompt">kubectl -n kube-system patch deployment metrics-server --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'</span>
+<span class="prompt">kubectl -n kube-system rollout status deployment/metrics-server</span>
+
+<span class="comment"># 14. 等約 15–30 秒讓它收第一筆資料，驗證 metrics API 有東西</span>
+<span class="prompt">kubectl top nodes</span>
+<span class="prompt">kubectl top pods -A</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">top 空轉 / HPA 冇反應，第一時間查 metrics-server</div>
+  <p>如果 <code>kubectl top nodes</code> 彈 <code>error: metrics not available yet</code>：等 30 秒再試；仲係唔得就 <code>kubectl -n kube-system logs deployment/metrics-server --tail=20</code> 睇下有冇 TLS 或者連線問題。HPA「好似冇反應」九成係 metrics-server 冇餵料或者 Pod 冇寫 requests——呢條排錯路考試會考完又考。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">準備一個會喘的 Deployment</div>
+  <pre><span class="comment"># 15. 產出帶 requests 的 Deployment（HPA 需要分母）</span>
+<span class="prompt">kubectl create deployment hpa-demo --image=nginx:1.25 --replicas=1 --dry-run=client -o yaml &gt; hpa-demo.yaml</span>
+<span class="prompt">nano hpa-demo.yaml</span>
+<span class="comment">#    spec.template.spec.containers[0] 加：
+#      resources:
+#        requests:
+#          cpu: 100m</span>
+<span class="prompt">kubectl apply -f hpa-demo.yaml</span>
+<span class="prompt">kubectl rollout status deployment/hpa-demo</span>
+
+<span class="comment"># 16. 建 Service（HPA 不需要，但等一下壓力來源要靠它）</span>
+<span class="prompt">kubectl expose deployment hpa-demo --port=80</span>
+
+<span class="comment"># 17. 下 autoscale 指令：平均 CPU 超過 50% 就加副本，最多 5 顆</span>
+<span class="prompt">kubectl autoscale deployment hpa-demo --cpu-percent=50 --min=1 --max=5</span>
+
+<span class="comment"># 18. 看 HPA：現在沒流量，TARGETS 顯示 &lt;unknown&gt; 或很低的百分比</span>
+<span class="prompt">kubectl get hpa</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">施加壓力，看它長胖</div>
+  <pre><span class="comment"># 19. 開「第二個」WSL2 終端，跑 2–3 個無限迴圈同時打 hpa-demo 的 Service
+#     （單一 load-gen 對靜態 nginx 頁的壓力可能不夠，多開幾個比較保險）</span>
+<span class="prompt">kubectl run load-gen --image=busybox:1.36 --restart=Never -- sh -c 'while true; do wget -q -O- http://hpa-demo &gt; /dev/null; done'</span>
+<span class="prompt">kubectl run load-gen2 --image=busybox:1.36 --restart=Never -- sh -c 'while true; do wget -q -O- http://hpa-demo &gt; /dev/null; done'</span>
+
+<span class="comment"># 20. 先確認用量真的有上去（TARGETS 有數字、top 看得到 CPU 在爬）</span>
+<span class="prompt">kubectl top pods -l app=hpa-demo</span>
+
+<span class="comment"># 21. 回第一個終端，盯著 HPA 與 Pod——約 1–2 分鐘後 REPLICAS 往上爬</span>
+<span class="prompt">kubectl get hpa -w</span>
+<span class="prompt">kubectl get pods -l app=hpa-demo -w</span>
+<span class="comment">#    TARGETS 超過 50%，副本數 1 → 2 → 3 …（每次調整間隔約 15–30 秒）</span>
+
+<span class="comment"># 22. 觀察夠了，到第二個終端停掉壓力來源</span>
+<span class="prompt">kubectl delete pod load-gen load-gen2</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收縮、收尾</div>
+  <pre><span class="comment"># 23. 回第一個終端：壓力停掉後不會立刻縮——HPA 要連續幾輪低於目標才縮</span>
+<span class="prompt">kubectl get hpa -w</span>
+<span class="prompt">kubectl get pods -l app=hpa-demo -w</span>
+<span class="comment">#    幾分鐘後副本數會慢慢回到 1（冷卻避免抖動）</span>
+
+<span class="comment"># 24. 不等它縮完也行，直接收尾</span>
+<span class="prompt">kubectl delete deployment hpa-demo</span>
+<span class="prompt">kubectl delete service hpa-demo</span>
+<span class="prompt">kubectl delete horizontalpodautoscaler hpa-demo</span>
+<span class="prompt">rm hpa-demo.yaml</span>
+
+<span class="comment"># 25. 課末確認：叢集乾淨、metrics-server 保留在 kube-system</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pods -n kube-system</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 20–22 步就係 HPA 嘅完整一生：先確認 <code>top</code> 有數（壓力真係食到 CPU）→ TARGETS 過咗 50% → Deployment 嘅 replicas 畀人調高 → 新 Pod 陸續 Ready。第 23 步「唔即刻縮」係縮放冷卻（cooldown）：HPA 用最近幾輪平均值做決定，唔想流量一震就狂縮狂放。</p>
+</div>
+
+<div class="diagram-card">
+  <h3>🌳 症狀分叉樹：三秒斷症</h3>
+  <p style="margin:0 0 8px;color:#57534e;font-size:13px;">先睇 <code>kubectl get pod</code> 兩個欄，再對 <code>describe</code> 嘅 event 句式，唔使估。</p>
+  <svg viewBox="0 0 720 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="symptom decision tree" style="width:100%;background:#f8fafc;border-radius:8px;">
+    <rect x="240" y="14" width="240" height="44" rx="10" fill="#ffffff" stroke="#1d2129" stroke-width="2"/>
+    <text x="252" y="34" font-size="12" font-weight="bold" fill="#1d2129">kubectl get pod：睇咩？</text>
+    <text x="252" y="50" font-size="11" fill="#334155">READY ＋ RESTARTS 兩個欄</text>
+    <rect x="16" y="90" width="220" height="140" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="2"/>
+    <text x="28" y="114" font-size="12" font-weight="bold" fill="#92400e">READY 0/1 ＋ RESTARTS 0</text>
+    <text x="28" y="132" font-size="12" fill="#334155">→ readiness 病 🟡</text>
+    <text x="28" y="150" font-size="11" fill="#334155">冇人死，淨係冇客</text>
+    <text x="28" y="170" font-size="11" fill="#64748b">event：Readiness probe</text>
+    <text x="28" y="186" font-size="11" fill="#64748b">failed: HTTP probe failed</text>
+    <text x="28" y="204" font-size="11" fill="#64748b">with statuscode: 000</text>
+    <rect x="250" y="90" width="220" height="140" rx="10" fill="#fef2f2" stroke="#cf222e" stroke-width="2"/>
+    <text x="262" y="114" font-size="12" font-weight="bold" fill="#cf222e">RESTARTS 一直加</text>
+    <text x="262" y="132" font-size="12" fill="#334155">→ liveness 病 🔴</text>
+    <text x="262" y="150" font-size="11" fill="#334155">kubelet 郁手殺緊</text>
+    <text x="262" y="170" font-size="11" fill="#64748b">event：Liveness probe</text>
+    <text x="262" y="186" font-size="11" fill="#64748b">failed: cat: can't open</text>
+    <text x="262" y="204" font-size="11" fill="#64748b">'/tmp/healthy'</text>
+    <rect x="484" y="90" width="220" height="140" rx="10" fill="#eff6ff" stroke="#0969da" stroke-width="2"/>
+    <text x="496" y="114" font-size="12" font-weight="bold" fill="#0969da">慢啟動，一開波就死</text>
+    <text x="496" y="132" font-size="12" fill="#334155">→ 加 startupProbe 🔵</text>
+    <text x="496" y="150" font-size="11" fill="#334155">畀 60s 預算佢大個</text>
+    <text x="496" y="170" font-size="11" fill="#64748b">event：Startup probe</text>
+    <text x="496" y="186" font-size="11" fill="#64748b">failed × N，45s 後靜返</text>
+    <text x="496" y="204" font-size="11" fill="#64748b">READY 0/1→1/1 正常</text>
+    <path d="M360 58 L127 90" stroke="#64748b" stroke-width="2"/>
+    <path d="M360 58 L360 90" stroke="#64748b" stroke-width="2"/>
+    <path d="M360 58 L594 90" stroke="#64748b" stroke-width="2"/>
+  </svg>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 三探針口訣：<strong>liveness 失敗＝重啟；readiness 失敗＝摘流量；startup 等大個先。</strong> ② 症狀判斷：READY 0/N → readiness 探針瀨嘢；RESTARTS 升 → liveness 失敗或者隻程式真炒；「起得慢成日畀人殺」→ 加 startupProbe。③ HPA 三前提：metrics-server 有料、Pod 有 requests、target 啱——出事照次序查。④ 指令：<code>kubectl autoscale deployment NAME --cpu-percent=50 --min=1 --max=5</code>、<code>kubectl get hpa</code>。⑤ 整探針：Pod 起咗之後探針欄位改唔到，刪咗重套。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你親眼睇住 liveness 失敗觸發容器重啟（RESTARTS 升），仲整返好佢。</li>
+  <li>你睇住 readiness 失敗搞到 READY 0/1（容器生勾勾但唔接客），仲整返好佢。</li>
+  <li>你用 startupProbe 幫慢熱容器護航：起好之前 liveness 唔開跑（READY 0/1、RESTARTS 0），唔使再靠 initialDelaySeconds 估時間。</li>
+  <li>你喺 kind 裝好 metrics-server，仲用 <code>kubectl top</code> 驗證咗 metrics API。</li>
+  <li>你用 <code>kubectl autoscale</code> 完成一次真嘅 CPU 驅動擴縮：加壓變大隻、停壓慢慢縮返。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">readinessProbe 連續失敗會點？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">重啟容器</button>
+    <button class="quiz-opt">摘除流量</button>
+    <button class="quiz-opt">刪除容器</button>
+    <button class="quiz-opt">擴增副本</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">HPA 計 CPU 利用率個分母係咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">requests.cpu</button>
+    <button class="quiz-opt">limits.cpu</button>
+    <button class="quiz-opt">節點核心數</button>
+    <button class="quiz-opt">目前副本數</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">起得慢嘅容器成日畀 liveness 誤殺，加咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">readiness</button>
+    <button class="quiz-opt">liveness</button>
+    <button class="quiz-opt">startup</button>
+    <button class="quiz-opt">tcpSocket</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Pod 識生、識接客、識自己大細，但「生勾勾嘅 Pod」啲資料擺邊好？計數同自保搞掂，下一課入 Storage（10%）：PV／PVC／StorageClass 三層——將「啲檔」由「會死嘅容器」手上交畀個 cluster 託管。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/">Container Probes（官方文件）</a>同<a href="https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/">Horizontal Pod Autoscaling（官方文件）</a> —— 本課嘅權威版。Probes 嗰篇對照表值得逐行睇一次，約 20 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0006-configmap-secret.html">← 上一課：ConfigMap 同 Secret</a>
+  <a href="0008-storage-pv-pvc.html">下一課：PV／PVC／StorageClass ➔</a>
+</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0003 — Labels &amp; Selectors 認人機制</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 1 · 對應考綱：<a href="../reference/cka-domain-map.html">Workloads &amp; Scheduling / Troubleshooting（貫穿）</a> · 需時約 20 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第三課 · 認人機制</span>
+  <h1>Lesson 0003：Labels &amp; Selectors 認人機制</h1>
+  <p><strong>目標：</strong>上一課你知 Deployment 靠 selector 認領 ReplicaSet，ReplicaSet 靠 selector 認領 Pod。今課就係要搞掂呢套「認人機制」——<strong>控制器唔係靠個名認親，係靠 Label 同 Selector 認人</strong>，仲要親手整隻孤兒 Pod 再救返佢。</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解要學 Labels？</strong><br>
+  CKA 最常見嘅瀨嘢現場就係「Pod 數量對唔上、有粒 Pod 冇人理」。十居其九都係 selector 同 label 唔夾。識睇 <code>--show-labels</code> 同 <code>-l</code，排錯快三倍，Workloads 同 Troubleshooting 兩邊一齊收分，貼地到爆！
+</div>
+
+<div class="diagram-card">
+  <h3>🔖 Selector 認人圖：邊個管邊個</h3>
+  <svg viewBox="0 0 760 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;background:#f8fafc;border-radius:8px;">
+    <g>
+      <rect x="20" y="40" width="170" height="130" rx="8" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="35" y="70" font-size="14" font-weight="bold" fill="#0969da">ReplicaSet</text>
+      <text x="35" y="95" font-size="12" fill="#333">selector:</text>
+      <text x="35" y="115" font-size="12" fill="#333">app=nginx</text>
+      <text x="35" y="135" font-size="11" fill="#666">+ pod-template-hash</text>
+    </g>
+    <g>
+      <line x1="190" y1="105" x2="260" y2="105" stroke="#0969da" stroke-width="3"/>
+      <polygon points="260,105 250,99 250,111" fill="#0969da"/>
+      <text x="195" y="95" font-size="11" fill="#0969da">認人</text>
+    </g>
+    <g>
+      <rect x="270" y="20" width="140" height="60" rx="8" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+      <text x="285" y="45" font-size="12" font-weight="bold" fill="#1a7f37">Pod app=nginx</text>
+      <text x="285" y="63" font-size="11" fill="#333">✔ 被認領</text>
+    </g>
+    <g>
+      <rect x="270" y="90" width="140" height="60" rx="8" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+      <text x="285" y="115" font-size="12" font-weight="bold" fill="#1a7f37">Pod app=nginx</text>
+      <text x="285" y="133" font-size="11" fill="#333">✔ 被認領</text>
+    </g>
+    <g>
+      <rect x="270" y="160" width="140" height="50" rx="8" fill="#ffebe9" stroke="#cf222e" stroke-width="2"/>
+      <text x="285" y="182" font-size="12" font-weight="bold" fill="#cf222e">Pod app=scratch</text>
+      <text x="285" y="199" font-size="11" fill="#333">✘ 孤兒，唔認得</text>
+    </g>
+    <g>
+      <rect x="450" y="60" width="290" height="100" rx="8" fill="#fff" stroke="#bf8700" stroke-width="2"/>
+      <text x="465" y="88" font-size="13" font-weight="bold" fill="#7d4e00">口訣：Label 係身份證</text>
+      <text x="465" y="110" font-size="12" fill="#333">Selector 係認人條件</text>
+      <text x="465" y="132" font-size="12" fill="#333">唔夾 ＝ 變孤兒，RS 即補新</text>
+    </g>
+  </svg>
+  <p>睇下幅圖就明：RS 只認 <code>app=nginx</code>，你一改 label，舊 Pod 即刻變孤兒，RS 仲會補多粒湊返夠數。</p>
+</div>
+
+<div class="diagram-card">
+  <h3>🎞️ 四格漫畫：改一粒 label，Pod 由 3 變 4 再返 3</h3>
+  <svg viewBox="0 0 760 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;background:#f8fafc;border-radius:8px;">
+    <g font-family="-apple-system, sans-serif">
+      <g transform="translate(15, 20)">
+        <rect width="170" height="200" rx="8" fill="#fff" stroke="#0969da" stroke-width="2"/>
+        <text x="12" y="24" font-size="12" font-weight="bold" fill="#0969da">Frame 1：3 粒啱數</text>
+        <rect x="12" y="35" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="53" font-size="11" fill="#1a7f37">Pod app=nginx ✔</text>
+        <rect x="12" y="68" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="86" font-size="11" fill="#1a7f37">Pod app=nginx ✔</text>
+        <rect x="12" y="101" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="119" font-size="11" fill="#1a7f37">Pod app=nginx ✔</text>
+        <text x="12" y="150" font-size="11" fill="#333">RS 數住：3/3 ✔</text>
+        <text x="12" y="168" font-size="11" fill="#333">selector 全中</text>
+        <text x="12" y="190" font-size="11" fill="#666">total = 3</text>
+      </g>
+      <g transform="translate(200, 20)">
+        <rect width="170" height="200" rx="8" fill="#fff" stroke="#bf8700" stroke-width="2"/>
+        <text x="12" y="24" font-size="12" font-weight="bold" fill="#7d4e00">Frame 2：改一粒</text>
+        <rect x="12" y="35" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="53" font-size="11" fill="#1a7f37">Pod app=nginx ✔</text>
+        <rect x="12" y="68" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="86" font-size="11" fill="#1a7f37">Pod app=nginx ✔</text>
+        <rect x="12" y="101" width="146" height="28" rx="5" fill="#ffebe9" stroke="#cf222e"/><text x="22" y="119" font-size="11" fill="#cf222e">Pod app=scratch ✘</text>
+        <text x="12" y="150" font-size="11" fill="#333">RS 數住：得 2 粒</text>
+        <text x="12" y="168" font-size="11" fill="#cf222e">一粒變孤兒</text>
+        <text x="12" y="190" font-size="11" fill="#666">認領 2 + 孤兒 1</text>
+      </g>
+      <g transform="translate(385, 20)">
+        <rect width="170" height="200" rx="8" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+        <text x="12" y="24" font-size="12" font-weight="bold" fill="#1a7f37">Frame 3：RS 補粒</text>
+        <rect x="12" y="35" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="53" font-size="11" fill="#1a7f37">Pod app=nginx ✔</text>
+        <rect x="12" y="68" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="86" font-size="11" fill="#1a7f37">Pod app=nginx ✔</text>
+        <rect x="12" y="101" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="119" font-size="11" fill="#1a7f37">新 Pod ✔（補）</text>
+        <rect x="12" y="134" width="146" height="24" rx="5" fill="#ffebe9" stroke="#cf222e"/><text x="22" y="150" font-size="11" fill="#cf222e">孤兒 scratch 仲喺度</text>
+        <text x="12" y="172" font-size="11" fill="#333">RS：3/3 ✔</text>
+        <text x="12" y="190" font-size="11" fill="#666">total = 4</text>
+      </g>
+      <g transform="translate(570, 20)">
+        <rect width="170" height="200" rx="8" fill="#fff" stroke="#0969da" stroke-width="2"/>
+        <text x="12" y="24" font-size="12" font-weight="bold" fill="#0969da">Frame 4：改返</text>
+        <rect x="12" y="35" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="53" font-size="11" fill="#1a7f37">Pod app=nginx ✔</text>
+        <rect x="12" y="68" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="86" font-size="11" fill="#1a7f37">Pod app=nginx ✔</text>
+        <rect x="12" y="101" width="146" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="22" y="119" font-size="11" fill="#1a7f37">Pod app=nginx ✔</text>
+        <text x="12" y="150" font-size="11" fill="#333">一時 4 粒→斬 1 粒</text>
+        <text x="12" y="168" font-size="11" fill="#333">RS 即刻做嘢</text>
+        <text x="12" y="190" font-size="11" fill="#666">total 返 3</text>
+      </g>
+      <g fill="#0969da" font-size="16" font-weight="bold">
+        <text x="185" y="125">→</text>
+        <text x="370" y="125">→</text>
+        <text x="555" y="125">→</text>
+      </g>
+    </g>
+  </svg>
+  <p>連戲咁睇：改走一粒 → RS 覺得唔夠數即補 → 全場變 4 粒 → 改返好 → RS 見多咗即斬 → 返 3 粒。RS 從來唔斬孤兒，佢只係識「唔夠就補、多咗就斬」。</p>
+</div>
+
+<h2>1. Label：物件嘅身份證</h2>
+<p>Label 就係黐喺物件上面嘅鍵值對（<code>key=value</code>），用途得兩個字：<strong>組織同選取</strong>。鍵名規則要記：可以加 prefix（例如 <code>app.kubernetes.io/name</code>，prefix 要係 DNS 子域名）；名同值最多 63 字、只可以用字母數字加 <code>-</code> <code>_</code> <code>.</code>，頭尾一定要係字母數字。最常用嘅鍵：<code>app</code>（咩應用）、<code>tier</code>（frontend/backend）、<code>version</code>（版本）。想查術語可睇 <a href="../reference/glossary.html">詞彙表</a>。</p>
+
+<table>
+  <thead>
+    <tr><th></th><th>畀邊個用</th><th>改咗斷唔斷領養</th><th>範例</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>Label（標籤）</strong></td><td>畀 selector 同 <code>-l</code> 用嚟認人、過濾</td><td><strong>會斷</strong>：Pod 個 label 一唔夾 selector 即變孤兒，RS 仲會補粒</td><td><code>app=nginx</code>、<code>tier=frontend</code></td></tr>
+    <tr><td><strong>Annotation（註解）</strong></td><td>畀人睇、畀工具睇（說明、change-cause）</td><td><strong>唔斷</strong>：改幾多都唔影響認領，selector 睬你都傻</td><td><code>kubernetes.io/change-cause="更新到 1.26"</code></td></tr>
+    <tr><td><strong>Name（名）</strong></td><td>畀人同 <code>kubectl get/delete 名</code> 直接點名用</td><td><strong>唔斷領養但改唔到</strong>：控制器唔靠名認人，名一開好就定死</td><td><code>nginx-7c9d8b9f6-abc12</code>（Pod 名，刪咗就冇）</td></tr>
+  </tbody>
+</table>
+
+<p>記住呢句就搞掂：<strong>Label 係畀 selector 揀嘅，Annotation 係畀人睇嘅。</strong></p>
+
+<h2>2. Selector 兩種寫法</h2>
+<p>Selector 就係「認人條件」。每個控制器都將條件寫喺 selector 入面，<strong>用 <code>,</code> 駁埋一齊就要全部符合先算認領</strong>。有兩種寫法：</p>
+
+<table>
+  <thead>
+    <tr><th>型別</th><th>運算子</th><th>範例</th><th>意義</th></tr>
+  </thead>
+  <tbody>
+    <tr><td rowspan="2"><strong>Equality-based</strong><br>（等值式）</td><td><code>=</code>、<code>==</code></td><td><code>app=nginx</code></td><td>該 label 的值等於 nginx</td></tr>
+    <tr><td><code>!=</code></td><td><code>tier!=frontend</code></td><td>值不等於 frontend（或沒有該鍵）</td></tr>
+    <tr><td rowspan="3"><strong>Set-based</strong><br>（集合式）</td><td><code>in</code></td><td><code>app in (nginx, busybox)</code></td><td>值是集合中的其中一員</td></tr>
+    <tr><td><code>notin</code></td><td><code>tier notin (frontend, backend)</code></td><td>值不在集合中</td></tr>
+    <tr><td>exists</td><td><code>tier</code>（有鍵）、<code>!tier</code>（沒鍵）</td><td>只看鍵存不存在，不看值</td></tr>
+  </tbody>
+</table>
+
+<div class="terminal box">
+  <div class="box-title">kubectl 帶 selector 的三種寫法（-l）</div>
+  <pre><span class="comment"># equality：等於</span>
+<span class="prompt">kubectl get pods -l app=nginx</span>
+
+<span class="comment"># set-based：值在集合內（留意括號是 ( )，不是 { }）</span>
+<span class="prompt">kubectl get pods -l 'app in (nginx, busybox)'</span>
+
+<span class="comment"># set-based exists：只要沒有 tier 這個鍵</span>
+<span class="prompt">kubectl get pods -l '!tier'</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">🐚 點解 set-based 要加單引號？（shell quoting 一分鐘）</div>
+  <p>個 shell 見到括號同空格會自己解讀，所以 <code>'app in (nginx)'</code> 一定要用<strong>單引號包住成串</strong>先至原粒送畀 kubectl：唔包，bash 會當括號係 subshell 而彈錯；用雙引號喺 bash 都得，但單引號最穩陣（Windows PowerShell 都係單引號）。記住：<strong>有括號、有空格、有 <code>!</code> 就加單引號</strong>。</p>
+  <p>想一次過要幾個條件同時成立（AND），用<strong>逗號</strong>駁：<code>kubectl get pods -l 'app in (nginx, busybox),tier=frontend'</code> ＝ app 係 nginx 或 busybox <strong>而且</strong> tier 等於 frontend。逗號前後唔好加空格，照抄呢個 pattern 就得。</p>
+</div>
+
+<h2>3. 實作 A：動手玩 Label</h2>
+<p>喺你個 kind 叢集開個新 terminal 照打。如果 0002 結尾唔記得清理，先 <code>kubectl delete deployment nginx</code> 執返乾淨：</p>
+
+<div class="terminal box">
+  <div class="box-title">建立 Deployment，然後動手改 label</div>
+  <pre><span class="comment"># 1. 建立 3 顆副本的 Deployment——它就是我們認人實驗的主角</span>
+<span class="prompt">kubectl create deployment nginx --image=nginx:1.25 --replicas=3</span>
+<span class="prompt">kubectl rollout status deployment/nginx</span>   <span class="comment"># 等 3 顆都就緒</span>
+
+<span class="comment"># 2. 把 label 一起印出來</span>
+<span class="prompt">kubectl get pods --show-labels</span>
+<span class="comment">#    每顆 Pod 應該有兩個 label：app=nginx（Deployment 加的）與
+#    pod-template-hash=...（ReplicaSet 加的，用來區分新舊版本）</span>
+
+<span class="comment"># 3. 依 label 過濾：只要 app=nginx 的 Pod</span>
+<span class="prompt">kubectl get pods -l app=nginx</span>
+
+<span class="comment"># 4. 挑一顆，幫它加 label tier=frontend（鍵不存在，直接加）</span>
+<span class="prompt">kubectl label pod nginx-(隨機尾碼) tier=frontend</span>
+
+<span class="comment"># 5. 用新 label 也找得到它</span>
+<span class="prompt">kubectl get pods -l tier=frontend</span>
+
+<span class="comment"># 6. 移除 label：鍵名尾巴加減號 -</span>
+<span class="prompt">kubectl label pod nginx-(隨機尾碼) tier-</span>
+
+<span class="comment"># 7. Set-based 示範：值「在集合內」才選中</span>
+<span class="prompt">kubectl get pods -l 'app in (nginx)'</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p><code>--show-labels</code> 會多印一欄 LABELS；<code>-l</code> 按條件過濾，列出嘅 Pod 數量會跟住條件變。將 <code>tier=frontend</code> 加落其中一粒，<code>kubectl get pods -l tier=frontend</code> 就只會見到嗰粒；刪走 label 之後再查就搵唔返。</p>
+</div>
+
+<h2>4. 實作 B：整隻孤兒出嚟（selector 唔夾）</h2>
+<p>CKA 成日考：「有粒 Pod 冇人理」。新手會諗：不如直接寫份 <code>selector.matchLabels</code> 同 template labels 唔夾嘅 ReplicaSet YAML 睇下咩事——<strong>唔得</strong>，apiserver 會直接彈你（<code>selector does not match template labels</code>）。現實世界嘅「唔夾」多數係<strong>手多多改咗 label</strong>搞出嚟：Pod 個 label 一變，控制器即刻唔認佢。繼續用實作 A 個叢集：</p>
+
+<div class="terminal box">
+  <div class="box-title">改掉一顆 Pod 的 label，製造孤兒</div>
+  <pre><span class="comment"># 8. 先確認現在 3 顆 Pod 都掛著 app=nginx</span>
+<span class="prompt">kubectl get pods --show-labels</span>
+
+<span class="comment"># 9. 挑一顆，把它的 app 值改成 scratch。
+#    注意：app 鍵已存在，改值要加 --overwrite</span>
+<span class="prompt">kubectl label pod nginx-(隨機尾碼) app=scratch --overwrite</span>
+
+<span class="comment"># 10. 再看一次：Pod 變成 4 顆！
+#     新尾碼的那顆是 RS 補的（它只認 app=nginx，少了就補）；
+#     舊的那顆還 Running，但 label 已不合——它成了孤兒</span>
+<span class="prompt">kubectl get pods --show-labels</span>
+
+<span class="comment"># 11. 用 selector 分邊：誰是 RS 管的、誰是孤兒</span>
+<span class="prompt">kubectl get pods -l app=nginx</span>      <span class="comment"># 3 顆，RS 管的</span>
+<span class="prompt">kubectl get pods -l app=scratch</span>     <span class="comment"># 1 顆，孤兒</span>
+
+<span class="comment"># 12. 看 RS 的認人條件（SELECTOR 欄）</span>
+<span class="prompt">kubectl get rs -o wide</span>
+<span class="prompt">kubectl describe rs (RS 名稱)</span>
+<span class="comment">#    SELECTOR 是 app=nginx,pod-template-hash=... 兩條件都得符合</span>
+
+<span class="comment"># 13. 修復：把孤兒的 app 改回 nginx。
+#     RS 一看到符合條件的 Pod 變 4 顆，立刻砍掉多出來的一顆</span>
+<span class="prompt">kubectl label pod (孤兒 Pod 名稱) app=nginx --overwrite</span>
+<span class="prompt">kubectl get pods --show-labels</span>   <span class="comment"># 回到 3 顆</span>
+
+<span class="comment"># 14. 收尾：刪 Deployment（它的 ReplicaSet 一起刪）
+#     （不想修復也可直接刪孤兒：kubectl delete pod (孤兒名稱)）</span>
+<span class="prompt">kubectl delete deployment nginx</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 10 步重點係「變咗 4 粒」：RS 唔會斬走嗰粒改咗 label 嘅 Pod（只係唔再認佢），反而會補多粒湊返 3 粒期望數。舊嗰粒又 Running 又冇人管——<strong>呢啲就叫孤兒（orphan）</strong>。判讀流程：<code>kubectl get rs -o wide</code> 對 SELECTOR 欄，再對 <code>kubectl get pods --show-labels</code>，最後 <code>kubectl describe rs (RS 名稱)</code> 確認。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>三個必背旗標要背到滾瓜爛熟：<code>--show-labels</code>（印埋 label）、<code>-l 'selector'</code>（按條件過濾）、<code>-L key</code>（大寫，直接加多欄，例如 <code>kubectl get pods -L app</code>）。改已有 label 要加 <code>--overwrite</code>；刪 label 用 <code>key-</code>。一見「Pod 數唔啱」或者「有粒 Pod 冇人理」，第一時間對 selector 同 labels，唔好估估下。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你識寫 equality-based 同 set-based 嘅 selector，仲識用 <code>-l</code> 過濾。</li>
+  <li>你識用 <code>kubectl label</code> 加 label、改值（<code>--overwrite</code>）、刪走（<code>key-</code>）。</li>
+  <li>你識斷症「selector 唔夾 → Pod 變孤兒」，仲識救返佢。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">Q1：<code>app in (nginx, busybox)</code> 係邊種 selector？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">等值式</button>
+    <button class="quiz-opt">集合式</button>
+    <button class="quiz-opt">刪除式</button>
+    <button class="quiz-opt">新增式</button>
+  </div>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Q2：<code>kubectl get pods -l app=nginx</code> 做緊咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">依標籤過濾</button>
+    <button class="quiz-opt">依名稱排序</button>
+    <button class="quiz-opt">顯示標籤欄</button>
+    <button class="quiz-opt">複製標籤組</button>
+  </div>
+  <p class="quiz-feedback"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Q3：RS 嘅 selector 同 Pod 標籤唔夾會點？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">變成孤兒</button>
+    <button class="quiz-opt">自動修復</button>
+    <button class="quiz-opt">即刻刪除</button>
+    <button class="quiz-opt">複製三份</button>
+  </div>
+  <p class="quiz-feedback"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Labels &amp; Selectors 係「Deployment 搞唔掂嘅場景」嘅地基。下一課睇 DaemonSet（每台 Node 都要一粒）同 Job（跑完就收工）——佢哋一樣靠 selector 認領自己啲 Pod。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/">Labels and Selectors（官方文件）</a> —— 本課嘅權威版。重點睇「Syntax and character set」同「Selector」兩節，約 10 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0002-imperative-kubectl-and-hands-on-lab.html">← 上一課：Deployment 自我修復</a>
+  <a href="0004-daemonset-job.html">下一課：DaemonSet 與 Job →</a>
+</div>
+</div>
+</body>
+</html>

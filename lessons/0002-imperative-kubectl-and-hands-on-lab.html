@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0002 — Deployment、自我修復與 Rollout/Rollback</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+    .lab-task { background: #fdfdfd; border: 1px solid var(--border); border-left: 5px solid var(--primary); border-radius: 6px; padding: 1.2rem; margin: 1.5rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 1 · 對應考綱：<a href="../reference/cka-domain-map.html">Workloads &amp; Scheduling（15%）</a> · 需時約 20 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第二課 · 控制器思維</span>
+  <h1>Lesson 0002：Deployment、自我修復與 Rollout/Rollback</h1>
+  <p><strong>目標：</strong>上一課你用 <code>kubectl run nginx</code> 跑出粒裸 Pod——刪走就真係冇咗。今課只做一件事：<strong>學識用 Deployment 包住 Pod，等「Pod 死咗自己生返」變成理所當然</strong>，再加埋考場 5 秒出 YAML 神技。</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解唔可以手寫 YAML？</strong><br>
+  CKA 得 120 分鐘做成十幾題，平均每題得 <strong>7 分鐘</strong>。由 <code>apiVersion: v1</code> 逐格縮排手打，錯一格就瀨嘢兼嘥 10 分鐘！合格考生全部係：<strong>一條指令出底稿 ➜ vim 補兩行 ➜ <code>kubectl apply -f</code> 收工</strong>！
+</div>
+
+<h2>1. 控制器思維：期望狀態 vs 現況</h2>
+<p>記返 0001 心法——你宣告「想要咩」，K8S 負責「變成嗰樣」。Deployment 就係呢個心法第一次完整落地：</p>
+
+<div class="terminal box">
+  <div class="box-title">Reconcile loop（調節迴圈）</div>
+  <pre>你宣告：我要 3 粒 nginx Pod
+ ↓ 寫入 etcd（期望狀態）
+控制器不斷對數：而家有幾粒？
+  ├─ 有 3 粒 → 咩都唔使做
+  ├─ 得 2 粒 → 即刻補 1 粒   ← 呢個就係「自我修復」
+  └─ 有 5 粒 → 斬走 2 粒</pre>
+</div>
+
+<p>呢個迴圈由 <code>kube-controller-manager</code> 入面嘅控制器執行（見 <a href="../reference/glossary.html">詞彙表 Controller</a>）。<strong>自癒唔係魔法，就係一道不斷對數嘅迴圈。</strong></p>
+
+<h2>2. Deployment 三層結構（排錯全靠佢）</h2>
+<p>Deployment 唔直接管 Pod，佢經 ReplicaSet 間接管。記住呢張表：</p>
+
+<table>
+  <thead>
+    <tr><th>層級</th><th>負責咩</th><th>一個比喻（港式職場版）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Deployment</strong></td>
+      <td>管「版本」：滾動更新、回滾、期望副本數</td>
+      <td>發行負責人：決定而家出邊一版</td>
+    </tr>
+    <tr>
+      <td><strong>ReplicaSet</strong></td>
+      <td>管「數量」：確保 N 粒 Pod 同時存在</td>
+      <td>排更主管：確保隨時有 3 個人返工</td>
+    </tr>
+    <tr>
+      <td><strong>Pod</strong></td>
+      <td>管「容器」：實際跑應用</td>
+      <td>前線員工：真正落手做嘢嗰個</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Deployment 點「認領」自己嘅 ReplicaSet 同 Pod？靠 <strong>Label &amp; Selector</strong>——Deployment 用 selector 揀中佢嘅 ReplicaSet，ReplicaSet 再用 selector 揀中佢嘅 Pod。細節留返 0003，今課記住一句：「<strong>邊個管邊個，靠標籤認人，唔靠名</strong>」。</p>
+
+<table>
+  <thead>
+    <tr><th></th><th>裸 Pod</th><th>ReplicaSet</th><th>Deployment</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>刪 Pod 會點</strong></td><td>刪咗就冇，唔會返生</td><td>即補返粒，保持副本數</td><td>經 ReplicaSet 即補返粒</td></tr>
+    <tr><td><strong>換 image 點換</strong></td><td>要刪咗再起（斷線）</td><td>要人手逐粒換，無 rolling 策略</td><td><code>set image</code> 即 rolling，新舊並存逐粒換</td></tr>
+    <tr><td><strong>回滾得唔得</strong></td><td>唔得，舊 Pod 已刪</td><td>唔得，唔記版本</td><td>得，<code>rollout undo</code> 即返上一版</td></tr>
+    <tr><td><strong>有冇版本號</strong></td><td>冇</td><td>冇（得 template hash 分新舊）</td><td>有，REVISION 1、2、3… 咁數上去</td></tr>
+  </tbody>
+</table>
+
+<p>一句記：裸 Pod 係散工、RS 係排更、Deployment 係出版本＋留歷史嗰個。</p>
+
+<div class="diagram-card">
+  <h3>⚡ 考場 5 秒出裝工作流（Imperative 生 YAML）</h3>
+  <svg class="svg-diagram" viewBox="0 0 780 180" xmlns="http://www.w3.org/2000/svg">
+    <g transform="translate(20, 30)">
+      <rect width="210" height="110" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="15" y="30" font-weight="bold" fill="#0969da" font-size="14">1. Imperative 指令</text>
+      <text x="15" y="55" font-size="12" fill="#333">k create deploy --image…</text>
+      <text x="15" y="75" font-size="12" fill="#333">$do &gt; dep.yaml</text>
+      <text x="15" y="100" font-size="11" fill="#666">⚡ 即刻有乾淨底稿</text>
+    </g>
+    <path d="M 235 85 L 265 85" stroke="#0969da" stroke-width="3"/>
+    <polygon points="265,85 255,80 255,90" fill="#0969da"/>
+    <g transform="translate(275, 30)">
+      <rect width="210" height="110" rx="6" fill="#ffffff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="15" y="30" font-weight="bold" fill="#1a7f37" font-size="14">2. 導出＋微調</text>
+      <text x="15" y="55" font-size="12" fill="#333">vi dep.yaml</text>
+      <text x="15" y="80" font-size="12" fill="#333">按題目補兩行</text>
+      <text x="15" y="105" font-size="11" fill="#666">⚡ 唔使記成份 YAML</text>
+    </g>
+    <path d="M 490 85 L 520 85" stroke="#1a7f37" stroke-width="3"/>
+    <polygon points="520,85 510,80 510,90" fill="#1a7f37"/>
+    <g transform="translate(530, 30)">
+      <rect width="220" height="110" rx="6" fill="#ffffff" stroke="#cf222e" stroke-width="2"/>
+      <text x="15" y="30" font-weight="bold" fill="#cf222e" font-size="14">3. 套用＋驗證</text>
+      <text x="15" y="55" font-size="12" fill="#333">k apply -f dep.yaml</text>
+      <text x="15" y="80" font-size="12" fill="#333">k get pods -w</text>
+      <text x="15" y="105" font-size="11" fill="#666">⚡ 搞掂衝下一題</text>
+    </g>
+  </svg>
+  <p>開考首 60 秒必設：<code>alias k=kubectl</code> ＋ <code>export do="--dry-run=client -o yaml"</code> ＋ bash completion。之後所有 <code>kubectl create … $do</code> 即刻吐 YAML。</p>
+</div>
+
+<h2>3. 實作 A：自我修復（親眼見一次就明）</h2>
+<p>喺你個 kind 叢集（單節點都夠用）開個 terminal 照打：</p>
+
+<div class="terminal box">
+  <div class="box-title">將 3 粒 nginx Pod 變成 Deployment</div>
+  <pre><span class="comment"># 1. 起 Deployment，期望 3 個副本</span>
+<span class="prompt">kubectl create deployment nginx --image=nginx:1.25 --replicas=3</span>
+
+<span class="comment"># 2. 一次睇三層（deployments, replicasets, pods）</span>
+<span class="prompt">kubectl get deployments,replicasets,pods</span>
+
+<span class="comment"># 3. 特登斬走一粒 Pod——記住佢個名（隨機尾碼）</span>
+<span class="prompt">kubectl delete pod nginx-(隨機尾碼)</span>
+
+<span class="comment"># 4. 再 list 一次：總數維持 3 粒，但尾碼換咗＝「新嘅一粒」</span>
+<span class="prompt">kubectl get pods</span>
+
+<span class="comment"># 5. 睇 Deployment 事件——會見到 ReplicaSet 重建紀錄</span>
+<span class="prompt">kubectl describe deployment nginx</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 4 步 Pod 總數維持 <strong>3 粒</strong>，但被你斬嗰粒個名尾碼換咗——嗰粒係 ReplicaSet 控制器幫你補返嘅新 Pod。呢個就係自我修復。同時留意 <code>get pods</code> 嘅 READY 同 RESTARTS 欄。</p>
+</div>
+
+<h2>4. 實作 B：Rollout 與 Rollback（換版唔斷線、出事即回滾）</h2>
+<p>Deployment 招牌能力：<strong>換版唔使停機、出事撳個掣返轉頭</strong>。同一個叢集繼續：</p>
+
+<div class="diagram-card">
+  <h3>🔄 Rollout 逐粒換：舊 RS 縮一粒、新 RS 大一粒</h3>
+  <svg class="svg-diagram" viewBox="0 0 780 340" xmlns="http://www.w3.org/2000/svg">
+    <g font-family="-apple-system, sans-serif">
+      <text x="20" y="25" font-size="13" font-weight="bold" fill="#0969da">起點：RS v1（REVISION 1，image 1.25）3 粒全 Running</text>
+      <g transform="translate(20, 35)">
+        <rect width="740" height="55" rx="8" fill="#fff" stroke="#0969da" stroke-width="2"/>
+        <text x="12" y="24" font-size="12" font-weight="bold" fill="#0969da">舊 RS v1</text>
+        <rect x="120" y="10" width="90" height="35" rx="6" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/><text x="135" y="32" font-size="11" fill="#1a7f37">Pod 1.25</text>
+        <rect x="220" y="10" width="90" height="35" rx="6" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/><text x="235" y="32" font-size="11" fill="#1a7f37">Pod 1.25</text>
+        <rect x="320" y="10" width="90" height="35" rx="6" fill="#dafbe1" stroke="#1a7f37" stroke-width="1.5"/><text x="335" y="32" font-size="11" fill="#1a7f37">Pod 1.25</text>
+        <rect x="440" y="10" width="90" height="35" rx="6" fill="#f6f8fa" stroke="#d0d7de" stroke-width="1.5" stroke-dasharray="4,3"/><text x="455" y="32" font-size="11" fill="#8c959f">新 RS v2: 0</text>
+        <text x="550" y="32" font-size="11" fill="#333">set image 1.26 之後開新 RS</text>
+      </g>
+      <text x="20" y="120" font-size="13" font-weight="bold" fill="#1a7f37">Rolling：新 0→3，舊 3→0，逐粒換（中間新舊並存）</text>
+      <g transform="translate(20, 130)">
+        <rect width="740" height="90" rx="8" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+        <text x="12" y="24" font-size="12" font-weight="bold" fill="#333">舊 v1: 3→2→1→0</text>
+        <rect x="12" y="35" width="60" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="20" y="53" font-size="11" fill="#1a7f37">1.25</text>
+        <rect x="78" y="35" width="60" height="28" rx="5" fill="#dafbe1" stroke="#1a7f37"/><text x="86" y="53" font-size="11" fill="#1a7f37">1.25</text>
+        <rect x="144" y="35" width="60" height="28" rx="5" fill="#f6f8fa" stroke="#d0d7de" stroke-dasharray="4,3"/><text x="158" y="53" font-size="11" fill="#8c959f">斬</text>
+        <text x="230" y="53" font-size="16" fill="#1a7f37">⇄</text>
+        <text x="260" y="24" font-size="12" font-weight="bold" fill="#333">新 v2: 0→1→2→3</text>
+        <rect x="260" y="35" width="60" height="28" rx="5" fill="#ddf4ff" stroke="#0969da"/><text x="268" y="53" font-size="11" fill="#0969da">1.26</text>
+        <rect x="326" y="35" width="60" height="28" rx="5" fill="#ddf4ff" stroke="#0969da"/><text x="334" y="53" font-size="11" fill="#0969da">1.26</text>
+        <rect x="392" y="35" width="60" height="28" rx="5" fill="#f6f8fa" stroke="#d0d7de" stroke-dasharray="4,3"/><text x="402" y="53" font-size="11" fill="#8c959f">起緊</text>
+        <text x="480" y="53" font-size="11" fill="#333">一次只郁一粒，服務唔斷</text>
+      </g>
+      <g transform="translate(20, 235)">
+        <rect width="740" height="80" rx="8" fill="#fff6e5" stroke="#bf8700" stroke-width="2"/>
+        <text x="12" y="24" font-size="12" font-weight="bold" fill="#7d4e00">undo 之後：唔係 REVISION 2 復活，而係出 REVISION 3（1.25 嘅 copy）</text>
+        <text x="12" y="46" font-size="11" fill="#333">REVISION 1 ＝ 1.25（初版）・ REVISION 2 ＝ 1.26（新版）・ REVISION 3 ＝ 1.25（copy of 1，舊 image 新編號）</text>
+        <text x="12" y="65" font-size="11" fill="#333">所以 history 愈 roll 愈多行，永遠唔會「改返舊編號」。</text>
+      </g>
+    </g>
+  </svg>
+  <p>口訣：<strong>開新唔斬舊，一對一咁換；回滾唔係時光倒流，係照舊樣出多個新版。</strong></p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">換版本、睇歷程、回滾</div>
+  <pre><span class="comment"># 6. image 由 nginx:1.25 換成 1.26（觸發 rollout）</span>
+<span class="prompt">kubectl set image deployment/nginx nginx=nginx:1.26</span>
+
+<span class="comment"># 7. 等 rollout 完成（會印 "successfully rolled out"）</span>
+<span class="prompt">kubectl rollout status deployment/nginx</span>
+
+<span class="comment"># 8. 睇歷史版本——REVISION 欄就係版號。
+#    CHANGE-CAUSE 顯示 &lt;none&gt; 係正常（新版 kubectl 已唔用 --record）。
+#    想留說明：kubectl annotate deployment/nginx kubernetes.io/change-cause="..."</span>
+<span class="prompt">kubectl rollout history deployment/nginx</span>
+
+<span class="comment"># 9. 反悔，返上一版（1.25）。
+#    注意：undo 之後會出「新嘅」REVISION（例如 3），唔係將 2 改返——回滾本身都係新版本</span>
+<span class="prompt">kubectl rollout undo deployment/nginx</span>
+<span class="prompt">kubectl rollout status deployment/nginx</span>
+<span class="prompt">kubectl rollout history deployment/nginx   # 再睇：多咗一行 REVISION 3</span>
+
+<span class="comment"># 10. 觀察換版過程：-w = --watch，先印快照、再串流變化（新舊並存、逐批換）。
+#     Ctrl+C 離開。想睇動態：開兩個 terminal，一邊跑呢行，一邊 set image 或 delete pod</span>
+<span class="prompt">kubectl get pods -w</span>
+
+<span class="comment"># 11. 收工清理</span>
+<span class="prompt">kubectl delete deployment nginx</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄（必背反射指令）</div>
+  <p><code>kubectl rollout status deployment/NAME</code>、<code>rollout history</code>、<code>rollout undo</code>——CKA 成日考「更新 image 後確認成功」同「新版瀨嘢即回滾」，三個指令各一鍵搞掂。<strong>唔好誤判</strong>：每次 <code>set image</code> 或 <code>undo</code> 都會產生一個<strong>新</strong> REVISION 編號（回滾＝新版本），所以 undo 之後唔係舊編號復活，而係新編號。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">rollout history 對照：set image 前後 vs undo 之後</div>
+  <pre><span class="comment"># set image 1.26 之後、undo 之前：兩個版本</span>
+deployment/nginx with revision:
+  REVISION  CHANGE-CAUSE
+  1         &lt;none&gt;        # image: nginx:1.25（初版）
+  2         &lt;none&gt;        # image: nginx:1.26（新版）
+
+<span class="comment"># undo 之後：唔係返去 REVISION 1，而係出多個 REVISION 3</span>
+deployment/nginx with revision:
+  REVISION  CHANGE-CAUSE
+  1         &lt;none&gt;        # image: nginx:1.25
+  2         &lt;none&gt;        # image: nginx:1.26
+  3         &lt;none&gt;        # image: nginx:1.25（copy of 1，舊 image、新編號）</pre>
+</div>
+
+<div class="lab-task">
+  <h3>🧪 加料 Lab：5 秒生 Deployment YAML（CKA 真題節奏）</h3>
+  <p>用考場工作流起一個 <code>frontend-deploy</code>（3 副本、<code>nginx:1.25</code>），再升上 <code>1.26</code> 即回滾——全程唔手寫成份 YAML：</p>
+  <div class="terminal box">
+    <div class="box-title">考場指令流（目標 1 分鐘搞掂）</div>
+    <pre><span class="prompt">export do="--dry-run=client -o yaml"</span>
+<span class="prompt">kubectl create deploy frontend-deploy --image=nginx:1.25 --replicas=3 $do &gt; dep.yaml</span>
+<span class="prompt">kubectl apply -f dep.yaml</span>
+<span class="prompt">kubectl set image deployment/frontend-deploy nginx=nginx:1.26</span>
+<span class="prompt">kubectl rollout status deployment/frontend-deploy</span>
+<span class="prompt">kubectl rollout undo deployment/frontend-deploy</span>
+<span class="prompt">kubectl delete -f dep.yaml</span></pre>
+  </div>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你解釋到 Deployment → ReplicaSet → Pod 三層各自管咩。</li>
+  <li>你親眼示範自癒：斬走一粒 Pod，控制器自動補返。</li>
+  <li>你完成一次滾動更新＋一次回滾，仲用 <code>-w</code> 睇到換版新舊並存。</li>
+  <li>你識用 <code>$do</code> 5 秒生 YAML，唔再逐格手打。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Pod 被刪走之後，邊個令副本數返到期望值？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">控制器</button>
+    <button class="quiz-opt">排程器</button>
+    <button class="quiz-opt">儲存庫</button>
+    <button class="quiz-opt">節點層</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">rollout undo 會將 Deployment 帶返去邊？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">上個版本</button>
+    <button class="quiz-opt">最初版本</button>
+    <button class="quiz-opt">空副本集</button>
+    <button class="quiz-opt">全部刪除</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">Deployment 靠咩管住佢啲 Pod？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">標籤選擇器</button>
+    <button class="quiz-opt">記憶體位置</button>
+    <button class="quiz-opt">網路通訊埠</button>
+    <button class="quiz-opt">容器執行期</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Phase 1 繼續。下一課將 Labels &amp; Selectors 講透（所有控制器嘅「認人」機制），再談 DaemonSet 同 Job——嗰啲係「Deployment 做唔到」嘅場景。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-kubectl-speed-reference.html">kubectl 搶分速查表</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/concepts/workloads/controllers/deployment/">Deployments（官方文件）</a> —— 本課嘅權威版。重點讀「Deployment 運作方式」同「更新 Deployment」兩節，約 15 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0001-k8s-architecture-mental-model.html">← 上一課：叢集架構</a>
+  <a href="0003-labels-selectors.html">下一課：Labels 認人 ➔</a>
+</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0019 — 故障排除 II：節點、控制平面同網路服務</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 5 · 對應考綱：<a href="../reference/cka-domain-map.html">Troubleshooting（30%）</a> · 需時約 30 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第十九課 · 由粒 Pod 睇到成個場</span>
+  <h1>Lesson 0019：故障排除 II — 節點、控制平面同網路服務</h1>
+  <p><strong>目標：</strong>0018 識修「單粒 Pod」；今課將視野推高兩層：① <strong>節點</strong>（NotReady、Conditions 判讀）同 <strong>控制平面</strong>（static pod 巡檢），② 將 0010 嘅分層除錯擴大成<strong>端到端故障鏈</strong>——由 curl 唔通一路查到 NetworkPolicy。</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  Pod 本身冇事，但成個 Service 照樣瀨嘢——呢啲先係 CKA 最鍾意考嘅大佬級題目！識得分層查 Node → 控制平面 → DNS → NetworkPolicy，先至叫真正搞掂 Troubleshooting 嗰 30%，貼地出師！
+</div>
+
+<div class="warn box">
+  <div class="box-title">開場先裝返 metrics-server</div>
+  <p>0007 裝嗰個 metrics-server 喺 0011／0012 兩次重建叢集嗰陣畀人洗走咗。呢課開場裝返佢（呢課同 0020 嘅 <code>kubectl top</code> 都靠佢），指令同 0007 一模一樣。</p>
+</div>
+
+<h2>1. 節點層：describe node 嘅 Conditions</h2>
+<p>Node 健唔健康，寫晒喺 <code>describe node</code> 嘅 <strong>Conditions</strong> 嗰版，逐條睇下：</p>
+<ul>
+  <li><strong>Ready</strong>＝kubelet 正常回報。False 或者 Unknown 即係「粒 Node 瓜咗／斷咗線」。</li>
+  <li><strong>MemoryPressure／DiskPressure／PIDPressure</strong>＝粒 Node 資源告急（多數跟住 evict Pod）。</li>
+</ul>
+<p>判讀口訣：<strong>Ready 睇 kubelet；Pressure 睇資源。</strong></p>
+
+<h2>2. 控制平面：static pod</h2>
+<p>kubelet 會自動起返 <code>/etc/kubernetes/manifests/</code> 下面嘅 manifest——控制平面四件頭（apiserver、controller-manager、scheduler、etcd）就係咁樣生存（0014／0015 都見過）。所以「控制器唔郁」可以咁樣模擬：將 controller-manager 嘅 manifest 搬走，kubelet 就會收走佢粒 pod——Deployment 從此冇人理。</p>
+
+<div class="diagram-card">
+  <h3>🏢 大廈比喻：兩條唔同嘅「起樓」迴圈</h3>
+  <p>成棟大廈（叢集）有兩種起樓法，唔好撈亂：<strong>左邊係「管理員自己起保安亭」</strong>（static pod，唔經 API），<strong>右邊係「住客申請、管業處批」</strong>（正常 Deployment，經 API＋foreman 蓋印）。</p>
+  <svg class="svg-diagram" viewBox="0 0 780 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="static pod 迴圈對正常 Deployment 迴圈">
+    <text x="15" y="22" font-weight="bold" fill="#0969da" font-size="14">⬅️ 左：static 迴圈（kubelet 直讀檔案）</text>
+    <text x="415" y="22" font-weight="bold" fill="#1a7f37" font-size="14">➡️ 右：正常迴圈（經 API＋foreman）</text>
+    <g transform="translate(15,32)">
+      <rect width="350" height="70" rx="6" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#0969da" font-size="13">📄 /etc/kubernetes/manifests/</text>
+      <text x="12" y="48" font-size="12" fill="#333">kube-apiserver.yaml 等四份圖紙瞓喺度</text>
+    </g>
+    <path d="M 190 102 L 190 122" stroke="#0969da" stroke-width="3"/>
+    <polygon points="190,122 185,114 195,114" fill="#0969da"/>
+    <g transform="translate(15,127)">
+      <rect width="350" height="70" rx="6" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#0969da" font-size="13">👀 kubelet watcher 睇住個 folder</text>
+      <text x="12" y="48" font-size="12" fill="#333">每隔一陣掃一次，郁手唔使經 API</text>
+    </g>
+    <path d="M 190 197 L 190 217" stroke="#0969da" stroke-width="3"/>
+    <polygon points="190,217 185,209 195,209" fill="#0969da"/>
+    <g transform="translate(15,222)">
+      <rect width="350" height="70" rx="6" fill="#e6f4ff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#0969da" font-size="13">📦 static pod 起咗喇</text>
+      <text x="12" y="48" font-size="12" fill="#333">etcd / apiserver / scheduler …</text>
+    </g>
+    <path d="M 15 257 L 5 257 L 5 67 L 12 67" stroke="#cf222e" stroke-width="2" stroke-dasharray="6 4" fill="none"/>
+    <polygon points="12,67 6,74 6,60" fill="#cf222e"/>
+    <text x="28" y="170" font-size="11" fill="#cf222e" transform="rotate(-90 28,170)">檔案搬走 ➔ Pod 收走</text>
+    <g transform="translate(415,32)">
+      <rect width="350" height="60" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#1a7f37" font-size="13">📮 API Server 收申請</text>
+      <text x="12" y="46" font-size="11" fill="#333">kubectl create deployment ghost-cm</text>
+    </g>
+    <path d="M 590 92 L 590 110" stroke="#1a7f37" stroke-width="3"/>
+    <polygon points="590,110 585,102 595,102" fill="#1a7f37"/>
+    <g transform="translate(415,115)">
+      <rect width="350" height="70" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#1a7f37" font-size="13">👷 Foreman 蓋印：controller-manager</text>
+      <text x="12" y="48" font-size="12" fill="#333">見 Deployment 即 چاپ ReplicaSet</text>
+    </g>
+    <path d="M 590 185 L 590 203" stroke="#1a7f37" stroke-width="3"/>
+    <polygon points="590,203 585,195 595,195" fill="#1a7f37"/>
+    <g transform="translate(415,208)">
+      <rect width="350" height="60" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#1a7f37" font-size="13">📦 ReplicaSet ➔ Pod 出世</text>
+      <text x="12" y="46" font-size="11" fill="#333">foreman 唔喺度 = 乜都生唔到</text>
+    </g>
+    <g transform="translate(415,278)">
+      <rect width="350" height="62" rx="6" fill="#fff8e6" stroke="#9a6700" stroke-width="2"/>
+      <text x="12" y="24" font-size="12" fill="#333">foreman 放假（manifest 搬走）➔</text>
+      <text x="12" y="44" font-size="12" fill="#333">Deployment 在、RS 冇、Pod 冇</text>
+    </g>
+  </svg>
+  <p>一句記：<strong>static pod 係「地盤佬自己起嘢」</strong>——kubelet 睇住個 folder 起，API 死咗都起倒；<strong>Deployment 係「要 foreman 蓋印」</strong>——controller-manager 唔喺度，張申請表就永遠瞓喺度冇人批。</p>
+</div>
+
+<div class="diagram-card">
+  <h3>🌐 端到端故障鏈：Station 0 出事，五站檢查法</h3>
+  <p>成日都係由呢句開始：<strong>「curl 唔通！」</strong>——唔好慌，由 Station 0 逐站排：</p>
+  <svg class="svg-diagram" viewBox="0 0 780 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Station 0 加四站檢查法">
+    <g transform="translate(10,20)">
+      <rect width="138" height="165" rx="6" fill="#fff8e6" stroke="#9a6700" stroke-width="2.5"/>
+      <text x="10" y="26" font-weight="bold" fill="#9a6700" font-size="12">Station 0：唔通</text>
+      <text x="10" y="46" font-size="11" fill="#333">wget 逾時 / 唔通</text>
+      <text x="10" y="64" font-size="11" fill="#333">-- BLOCKED --</text>
+      <text x="10" y="88" font-size="11" fill="#666">例：wget -T 3</text>
+      <text x="10" y="106" font-size="11" fill="#666">http://web… 逾時</text>
+      <text x="10" y="130" font-size="11" fill="#666">➔ 開查，唔好估！</text>
+      <text x="10" y="152" font-size="11" fill="#9a6700" font-weight="bold">起點，人人一樣</text>
+    </g>
+    <path d="M 150 102 L 162 102" stroke="#9a6700" stroke-width="3"/><polygon points="162,102 154,97 154,107" fill="#9a6700"/>
+    <g transform="translate(166,20)">
+      <rect width="138" height="165" rx="6" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="10" y="26" font-weight="bold" fill="#0969da" font-size="12">第 1 站：DNS</text>
+      <text x="10" y="46" font-size="11" fill="#333">nslookup 全名</text>
+      <text x="10" y="64" font-size="11" fill="#1a7f37">✅ Address: 10.96.x.x</text>
+      <text x="10" y="82" font-size="11" fill="#1a7f37">= 過關</text>
+      <text x="10" y="104" font-size="11" fill="#cf222e">❌ NXDOMAIN</text>
+      <text x="10" y="122" font-size="11" fill="#cf222e">= 名錯 / 無 svc</text>
+      <text x="10" y="152" font-size="11" fill="#666">查到 VIP 先行得</text>
+    </g>
+    <path d="M 306 102 L 318 102" stroke="#0969da" stroke-width="3"/><polygon points="318,102 310,97 310,107" fill="#0969da"/>
+    <g transform="translate(322,20)">
+      <rect width="138" height="165" rx="6" fill="#fff" stroke="#8250df" stroke-width="2"/>
+      <text x="10" y="26" font-weight="bold" fill="#8250df" font-size="12">第 2 站：後端</text>
+      <text x="10" y="46" font-size="11" fill="#333">get endpoints</text>
+      <text x="10" y="64" font-size="11" fill="#1a7f37">✅ 10.244.x.x:80</text>
+      <text x="10" y="82" font-size="11" fill="#1a7f37">2 addresses = 過關</text>
+      <text x="10" y="104" font-size="11" fill="#cf222e">❌ &lt;none&gt; / 空</text>
+      <text x="10" y="122" font-size="11" fill="#cf222e">= selector 錯</text>
+      <text x="10" y="152" font-size="11" fill="#666">無後端唔使再查落去</text>
+    </g>
+    <path d="M 462 102 L 474 102" stroke="#8250df" stroke-width="3"/><polygon points="474,102 466,97 466,107" fill="#8250df"/>
+    <g transform="translate(478,20)">
+      <rect width="138" height="165" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="10" y="26" font-weight="bold" fill="#1a7f37" font-size="12">第 3 站：READY</text>
+      <text x="10" y="46" font-size="11" fill="#333">get pods 查 READY</text>
+      <text x="10" y="64" font-size="11" fill="#1a7f37">✅ 1/1 先有流量</text>
+      <text x="10" y="82" font-size="11" fill="#1a7f37">= endpoints 有料</text>
+      <text x="10" y="104" font-size="11" fill="#cf222e">❌ 0/1 = 探針瀨嘢</text>
+      <text x="10" y="122" font-size="11" fill="#cf222e">返 0007 睇 probe</text>
+      <text x="10" y="152" font-size="11" fill="#666">唔 Ready 即摘流量</text>
+    </g>
+    <path d="M 618 102 L 630 102" stroke="#1a7f37" stroke-width="3"/><polygon points="630,102 622,97 622,107" fill="#1a7f37"/>
+    <g transform="translate(634,20)">
+      <rect width="138" height="165" rx="6" fill="#fff" stroke="#cf222e" stroke-width="2"/>
+      <text x="10" y="26" font-weight="bold" fill="#cf222e" font-size="12">第 4 站：NP</text>
+      <text x="10" y="46" font-size="11" fill="#333">get networkpolicy</text>
+      <text x="10" y="64" font-size="11" fill="#333">頭三站 OK 都唔通</text>
+      <text x="10" y="82" font-size="11" fill="#cf222e">⏱️ timeout = 畀人擋</text>
+      <text x="10" y="104" font-size="11" fill="#cf222e">refused = 無後端</text>
+      <text x="10" y="122" font-size="11" fill="#666">兩個唔同死法！</text>
+      <text x="10" y="152" font-size="11" fill="#666">最後疑犯就係佢</text>
+    </g>
+  </svg>
+  <svg class="svg-diagram" viewBox="0 0 780 170" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="VIP 對 Pod IP">
+    <text x="15" y="22" font-weight="bold" fill="#0969da" font-size="13">🎯 VIP（門牌）vs Pod IP（房號）：nslookup 俾你門牌，endpoints 俾你房號</text>
+    <g transform="translate(15,32)">
+      <rect width="340" height="115" rx="6" fill="#e6f4ff" stroke="#0969da" stroke-width="2"/>
+      <text x="15" y="28" font-weight="bold" fill="#0969da" font-size="13">🏠 Service VIP：10.96.12.3</text>
+      <text x="15" y="50" font-size="12" fill="#333">nslookup web ➔ Address 呢個</text>
+      <text x="15" y="72" font-size="12" fill="#333">全名 web.default.svc.cluster.local</text>
+      <text x="15" y="94" font-size="11" fill="#666">一個門牌，全棟大廈共用，唔會變</text>
+    </g>
+    <g transform="translate(220,85)">
+      <rect width="90" height="30" rx="15" fill="#0969da"/>
+      <text x="10" y="20" font-size="12" fill="#fff" font-weight="bold">轉發 ➔</text>
+    </g>
+    <g transform="translate(425,32)">
+      <rect width="340" height="115" rx="6" fill="#f3e8ff" stroke="#8250df" stroke-width="2"/>
+      <text x="15" y="28" font-weight="bold" fill="#8250df" font-size="13">🛏️ Pod IPs：10.244.1.5 / .6</text>
+      <text x="15" y="50" font-size="12" fill="#333">get endpoints web ➔ 2 個房號</text>
+      <text x="15" y="72" font-size="12" fill="#333">kube-proxy 照房號派信</text>
+      <text x="15" y="94" font-size="11" fill="#666">Pod 死咗房號即換，VIP 唔郁</text>
+    </g>
+  </svg>
+  <p>記住：<strong>「curl 唔通」唔係一個問題，係一串問題</strong>，由 Station 0 逐站排就搞掂。timeout 同 refused 係兩種唔同死法——前者多數畀 NP 擋，後者多數無後端。</p>
+</div>
+
+<div class="diagram-card">
+  <h3>🎯 podSelector: {} 係咩？一個圈笪晒所有 Pod</h3>
+  <p><code>podSelector: {}</code> 唔係「冇揀嘢」，係「成個 namespace 笪晒」——好似魚網大到成個魚塘都罩住。</p>
+  <svg class="svg-diagram" viewBox="0 0 780 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="podSelector 空即全選 Venn">
+    <ellipse cx="240" cy="100" rx="150" ry="75" fill="#ffebe9" stroke="#cf222e" stroke-width="2.5"/>
+    <ellipse cx="540" cy="100" rx="150" ry="75" fill="#e6f4ff" stroke="#0969da" stroke-width="2" stroke-dasharray="7 4"/>
+    <circle cx="180" cy="100" r="18" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="172" y="104" font-size="11" fill="#333">a</text>
+    <circle cx="240" cy="100" r="18" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="232" y="104" font-size="11" fill="#333">b</text>
+    <circle cx="300" cy="100" r="18" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="292" y="104" font-size="11" fill="#333">x</text>
+    <text x="150" y="40" font-weight="bold" fill="#cf222e" font-size="13">podSelector: {} = 笪晒</text>
+    <text x="165" y="170" font-size="11" fill="#666">a / b / x 全部中，連新嚟嘅都中</text>
+    <circle cx="500" cy="100" r="18" fill="#fff" stroke="#333" stroke-width="1.5"/><text x="492" y="104" font-size="11" fill="#333">b</text>
+    <circle cx="580" cy="80" r="18" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="4 3"/><text x="572" y="84" font-size="11" fill="#8c959f">a</text>
+    <circle cx="580" cy="120" r="18" fill="#f6f8fa" stroke="#8c959f" stroke-width="1.5" stroke-dasharray="4 3"/><text x="572" y="124" font-size="11" fill="#8c959f">x</text>
+    <text x="440" y="40" font-weight="bold" fill="#0969da" font-size="13">matchLabels: app=b = 只笪 b</text>
+    <text x="460" y="170" font-size="11" fill="#666">a / x 企喺圈出面，唔關事</text>
+  </svg>
+  <table>
+    <thead>
+      <tr><th>情況</th><th>有冇 NetworkPolicy</th><th>效果（HK 話）</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>冇任何 Policy</td><td>零張</td><td><strong>全開</strong>——所有 Pod 任連，好似大廈大門長期開住</td></tr>
+      <tr><td>一張 Policy 出現（就算只寫一條 allow）</td><td>≥1 張揀中咗粒 Pod</td><td><strong>預設拒絕</strong>——中咗嗰粒即刻變「除咗寫明准許，其餘全擋」，好似一裝閘機，無卡一律唔入得</td></tr>
+    </tbody>
+  </table>
+  <p>所以今課 <code>deny-all</code> 用 <code>podSelector: {}</code> 加 <code>policyTypes: ["Ingress"]</code>，就係「成個 default namespace 落閘」——一張就夠閂晒，唔使逐粒 Pod 寫。</p>
+</div>
+
+<h2>3. 實作 A：裝返 metrics-server 兼睇 Node 健康</h2>
+
+<div class="terminal box">
+  <div class="box-title">補裝 metrics-server（0007 重播）</div>
+  <pre><span class="comment"># 1. 先確認佢真係唔見咗（0012 重建之後 kube-system 冇 metrics-server）</span>
+<span class="prompt">kubectl get pods -n kube-system | grep metrics-server</span>
+<span class="comment">#    冇輸出 = 冇裝</span>
+
+<span class="comment"># 2. 裝官方 components.yaml</span>
+<span class="prompt">kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml</span>
+
+<span class="comment"># 3. kind 嘅 kubelet 冇設 TLS 認證——補參數（淨係本地測試叢集先咁做）</span>
+<span class="prompt">kubectl -n kube-system patch deployment metrics-server --type=json -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'</span>
+<span class="prompt">kubectl -n kube-system rollout status deployment/metrics-server</span>
+
+<span class="comment"># 4. 等約 30 秒收數據，驗證</span>
+<span class="prompt">kubectl top nodes</span>
+<span class="prompt">kubectl top pods -A</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">節點條件判讀</div>
+  <pre><span class="comment"># 5. Conditions 嗰版：Ready=True；三種 Pressure 都 False 先叫健康</span>
+<span class="prompt">kubectl describe node kind-worker</span>
+
+<span class="comment"># 6. -o wide 睇 Node 狀態同版本</span>
+<span class="prompt">kubectl get nodes -o wide</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">static pod 巡檢</div>
+  <pre><span class="comment"># 7. kube-system 入面「冇 -replicaset 尾碼」嘅 Pod 就係 static pod：
+#    etcd-kind-control-plane / kube-apiserver / kube-controller-manager / kube-scheduler</span>
+<span class="prompt">kubectl get pods -n kube-system -o wide</span>
+
+<span class="comment"># 8. 佢哋嘅 manifest 全部瞓喺 control-plane 粒 Node 嘅呢個目錄</span>
+<span class="prompt">docker exec kind-control-plane ls /etc/kubernetes/manifests</span></pre>
+</div>
+
+<h2>4. 實作 B：模擬「控制器瓜咗」——Deployment 生唔到 Pod</h2>
+
+<div class="warn box">
+  <div class="box-title">進階實驗，郁手前睇定</div>
+  <p>將 controller-manager 嘅 manifest 搬走會令佢停擺約 1–2 分鐘，期間 Deployment 唔會有任何郁動——呢個正係「控制平面某件頭瓜咗」嘅經典症狀。做完即刻擺返，個叢集會自己復原。如果你唔想郁個正式叢集，可以跳過呢節（概念照讀）。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">整故障：controller-manager 消失</div>
+  <pre><span class="comment"># 9. 先將 controller-manager 嘅 manifest 搬出 manifests 目錄</span>
+<span class="prompt">docker exec kind-control-plane mv /etc/kubernetes/manifests/kube-controller-manager.yaml /tmp/</span>
+
+<span class="comment"># 10. 確認佢粒 static pod 畀 kubelet 收走（等一陣再 get）</span>
+<span class="prompt">kubectl get pods -n kube-system | grep controller-manager</span>
+<span class="comment">#    會發現嗰粒 pod 唔見咗</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">睇症狀：Deployment 冇 ReplicaSet、冇 Pod</div>
+  <pre><span class="comment"># 11. 開一支 Deployment——佢「應該」要畀 controller-manager 處理</span>
+<span class="prompt">kubectl create deployment ghost-cm --image=nginx:1.25 --replicas=2</span>
+<span class="prompt">kubectl get deployment ghost-cm</span>
+<span class="prompt">kubectl get rs,pods</span>
+<span class="comment">#    Deployment 存在，但 ReplicaSet 建唔到、Pod 出唔到世——
+#    因為「負責生 RS 嘅控制器」唔喺度。</span>
+
+<span class="comment"># 12. 診斷結論：唔係 YAML 錯、唔係 Pod 壞，係控制器層冇人做嘢</span>
+<span class="prompt">kubectl describe deployment ghost-cm</span>
+<span class="comment">#    冇 ReplicaSet 相關事件——同平時「即刻生 RS」嘅表現對照就好有感</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">復原：將 manifest 擺返去</div>
+  <pre><span class="comment"># 13. 擺返 manifest，kubelet 幾秒內重新起返 controller-manager</span>
+<span class="prompt">docker exec kind-control-plane mv /tmp/kube-controller-manager.yaml /etc/kubernetes/manifests/</span>
+<span class="prompt">kubectl get pods -n kube-system | grep controller-manager</span>
+<span class="prompt">kubectl get pods -l app=ghost-cm</span>
+<span class="comment">#    ReplicaSet 出現、Pod 出世——控制器復原後自動補做（reconcile）</span>
+<span class="prompt">kubectl delete deployment ghost-cm</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 11–12 步係「控制平面元件故障」嘅指紋：<strong>Deployment 存在但冇對應 ReplicaSet</strong>，describe 睇唔到任何新事件。現實世界撞到呢種「控制器冇做嘢」嘅症狀，方向係查 <code>kube-controller-manager</code>（logs、static pod 仲喺唔喺度），唔係走去反 Deployment 份 YAML。</p>
+</div>
+
+<h2>5. 實作 C：端到端故障鏈——curl 唔通，由頭查到尾</h2>
+<p>將 0010（DNS 層）＋0009（endpoints 層）＋0012（NetworkPolicy）串成一次完整除錯：個服務突然連唔到，點樣一步步定位？</p>
+
+<div class="terminal box">
+  <div class="box-title">準備：一支服務＋一支客戶端＋先確認通</div>
+  <pre><span class="comment"># 14. 開服務同客戶端（同 0010 同一招）</span>
+<span class="prompt">kubectl create deployment web --image=nginx:1.25 --replicas=2</span>
+<span class="prompt">kubectl expose deployment web --port=80</span>
+<span class="prompt">kubectl run client --image=busybox:1.36 --restart=Never -- sleep 3600</span>
+<span class="prompt">kubectl wait --for=condition=Ready pod/client --timeout=60s</span>
+
+<span class="comment"># 15. 基準線：而家係通嘅</span>
+<span class="prompt">kubectl exec client -- wget -qO- -T 3 http://web.default.svc.cluster.local | head -n 1</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">落故障：default namespace 全面 deny ingress</div>
+  <pre><span class="comment"># 16. 0012 嘅 default deny 出場——特登將 default 嘅所有入站流量閂咗佢</span>
+<span class="prompt">kubectl apply -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: networking.k8s.io/v1</span>
+<span class="prompt">kind: NetworkPolicy</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: deny-all</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  podSelector: {}</span>
+<span class="prompt">  policyTypes: ["Ingress"]</span>
+<span class="prompt">EOF</span>
+<span class="prompt">kubectl get networkpolicy</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">故障鏈第一站：curl 唔通</div>
+  <pre><span class="comment"># 17. 症狀出現：wget 逾時</span>
+<span class="prompt">kubectl exec client -- wget -qO- -T 3 http://web.default.svc.cluster.local || echo '-- BLOCKED --'</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">第二站：DNS 層正唔正常？（0010 嗰招）</div>
+  <pre><span class="comment"># 18. nslookup 解到 VIP——DNS 層冇事，唔係名錯</span>
+<span class="prompt">kubectl exec client -- nslookup web.default.svc.cluster.local</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">第三站：endpoints 有冇後端？（0009 嗰招）</div>
+  <pre><span class="comment"># 19. endpoints 有 2 個 IP——selector 有打中、Pod 都 Ready（0007 嘅 READY 都 check 下）</span>
+<span class="prompt">kubectl get endpoints web</span>
+<span class="prompt">kubectl get pods -l app=web</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">第四站：係咪 NetworkPolicy 擋住？（0012 嗰招）</div>
+  <pre><span class="comment"># 20. 頭三站都正常，剩返嘅疑犯：NetworkPolicy</span>
+<span class="prompt">kubectl get networkpolicy</span>
+<span class="prompt">kubectl describe networkpolicy deny-all</span>
+<span class="comment">#    podSelector {} + Ingress = 將 default 全擋——搵到兇手喇</span>
+
+<span class="comment"># 21. 拎走故障源，服務復活</span>
+<span class="prompt">kubectl delete networkpolicy deny-all</span>
+<span class="prompt">kubectl exec client -- wget -qO- -T 3 http://web.default.svc.cluster.local | head -n 1</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾</div>
+  <pre><span class="comment"># 22. 清走練習物件（metrics-server 留返畀 0020）</span>
+<span class="prompt">kubectl delete deployment web</span>
+<span class="prompt">kubectl delete svc web</span>
+<span class="prompt">kubectl delete pod client</span>
+<span class="prompt">kubectl get pods -A</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 17–21 步係 Troubleshooting 30% 嘅濃縮：<strong>「curl 唔通」唔係一個問題，係一串問題</strong>。照「DNS → endpoints → Pod READY → NetworkPolicy」逐層排，每層都有對應嘅 kubectl 指令——呢個就叫系統化除錯。Service 連唔到三大原因：selector 唔啱、Pod 唔 Ready、NetworkPolicy 擋（呢課一次過收齊）。想溫返字眼可睇 <a href="../reference/glossary.html">詞彙表</a>。</p>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① Node：<code>describe node</code> 嘅 Conditions——Ready 查 kubelet、MemoryPressure 等查資源；NotReady 先查 kubelet 同 CNI。② 控制平面係 static pod：manifest 喺 <code>/etc/kubernetes/manifests</code>；「Deployment 存在但冇 RS」＝控制器冇做嘢。③ <code>kubectl top</code> 嘅前提係 metrics-server。④ 端到端除錯鏈：<code>curl 唔通 → nslookup（DNS 層）→ get endpoints（後端層）→ get pods READY（0007）→ get networkpolicy（0012）</code>。⑤ 畀 NP 擋＝逾時；冇後端＝connection refused。⑥ Service 冇 endpoints 三原因：selector 唔啱、Pod 唔 Ready、畀 NP 擋。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你將 metrics-server 裝返個叢集，仲用 <code>kubectl top</code> 驗證咗。</li>
+  <li>你識得判讀 Node Conditions，仲搵到控制平面嘅 static pod 同佢哋嘅 manifest。</li>
+  <li>你模擬兼復原咗「controller-manager 瓜咗」嘅故障，睇得明 Deployment 生唔到 Pod 嘅指紋。</li>
+  <li>你沿住 DNS → endpoints → NetworkPolicy 完成一次端到端網路除錯。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">Node Conditions 嘅 Ready=False，第一時間懷疑邊個？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">CoreDNS 組件</button>
+    <button class="quiz-opt">kubelet 組件</button>
+    <button class="quiz-opt">kube-proxy 組件</button>
+    <button class="quiz-opt">scheduler 組件</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">「Deployment 存在但冇 ReplicaSet」代表咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">控制器冇做嘢</button>
+    <button class="quiz-opt">容器映像損壞</button>
+    <button class="quiz-opt">標籤選擇出錯</button>
+    <button class="quiz-opt">叢集資源用盡</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">端到端除錯嗰陣，endpoints 有 IP、Pod 都 Ready，下一步查咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kubectl logs 查</button>
+    <button class="quiz-opt">node 狀態查</button>
+    <button class="quiz-opt">NetworkPolicy 查</button>
+    <button class="quiz-opt">Secret 物件查</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>除錯技能儲齊喇。最後一課將 20 課濃縮成一次 <strong>CKA 模擬考</strong>：10 題 60 分鐘計時實作、錯題回課對照表、考前 checklist——仲有考場「一頁濃縮小抄」。Phase 5 收工，你就夠料去應考喇。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/tasks/debug/debug-cluster/">Troubleshoot Clusters（官方文件）</a> —— 呢課嘅權威版。重點讀「Troubleshooting」總表同各元件章節，約 15 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0018-troubleshooting-pods.html">← 上一課：Pod 排錯</a>
+  <a href="0020-cka-mock-exam.html">下一課：模擬考 ➔</a>
+</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kubernetes 詞彙表 — 課程參考</title>
+<link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+<h1>Kubernetes 詞彙表</h1>
+<p class="meta">課程共通詞彙表（建立於 Phase 0，於 Lesson 0005–0020 批量產出時擴充至全 20 課）· 所有課程與講解必須遵循此用語。英文術語一律保留原文，附繁體中文說明。</p>
+
+<p>本表以 <a href="https://kubernetes.io/docs/reference/glossary/">Kubernetes 官方詞彙表</a> 為準。查不到的名詞先查官方文件，再決定是否補充至此。</p>
+
+<h2>基礎與叢集架構</h2>
+<dl class="term">
+  <dt>Cluster（叢集）</dt>
+  <dd>一組執行容器化應用的節點（nodes）集合，由控制平面統一管理。Kubernetes 的最小部署單位就是一個叢集。</dd>
+
+  <dt>Control Plane（控制平面）</dt>
+  <dd>叢集的大腦，負責做出全局決策（如排程、擴縮容）並回應叢集事件。元件：kube-apiserver、etcd、kube-scheduler、kube-controller-manager、cloud-controller-manager。</dd>
+
+  <dt>Node（節點）</dt>
+  <dd>叢集內的工作機器，可以是實體機或虛擬機。分為「控制平面節點」（跑控制平面）與「工作節點」（跑你的工作負載）。節點上必有的元件：kubelet、kube-proxy、容器執行時期。</dd>
+
+  <dt>kube-apiserver</dt>
+  <dd>控制平面的前端，對外暴露 Kubernetes API。所有管理與控制指令都經由它進入叢集。</dd>
+
+  <dt>etcd</dt>
+  <dd>一致且高可用的鍵值儲存，Kubernetes 所有叢集狀態都存放在這裡。CKA 考備份與還原的重點。</dd>
+
+  <dt>kube-scheduler</dt>
+  <dd>負責為新建立的 Pod 選擇最合適的節點，考量資源需求、親和性、污點等條件。</dd>
+
+  <dt>kube-controller-manager</dt>
+  <dd>執行控制器流程的元件。控制器是一道迴圈，不斷把叢集現況推向期望狀態（例如 ReplicaSet 控制器確保副本數正確）。</dd>
+
+  <dt>kubelet</dt>
+  <dd>每個節點上的「節點代理人」，確保該節點上的容器依照 PodSpec 正常運行；也是「static pod」的管理者。</dd>
+
+  <dt>kube-proxy</dt>
+  <dd>節點上的網路代理人，實作 Service 的虛擬 IP 與負載平衡規則（iptables／IPVS）。</dd>
+
+  <dt>Container Runtime（容器執行時期）</dt>
+  <dd>實際啟動與管理容器的軟體（containerd、CRI-O…）。Kubelet 透過 CRI（Container Runtime Interface）與它溝通。</dd>
+
+  <dt>Pod</dt>
+  <dd>Kubernetes 最小的部署單位。一個 Pod 內可有一個或多個容器，共用網路與儲存。</dd>
+
+  <dt>Workload（工作負載）</dt>
+  <dd>跑在 Kubernetes 上的應用程式集合。管理工作負載的 API 物件包括 Deployment、ReplicaSet、StatefulSet、DaemonSet、Job、CronJob 等。</dd>
+
+  <dt>Controller（控制器）</dt>
+  <dd>一道比較期望狀態與現況並加以修正的迴圈。Kubernetes 的自我修復能力建立在控制器模式上。</dd>
+
+  <dt>kubectl</dt>
+  <dd>Kubernetes 的命令列工具，透過 kube-apiserver 與叢集互動。CKA 考試全程使用它。</dd>
+
+  <dt>Namespace（命名空間）</dt>
+  <dd>在叢集內切割資源範圍的機制，常用於隔離環境（如 dev/test/prod）。</dd>
+
+  <dt>Static Pod（靜態 Pod）</dt>
+  <dd>由 kubelet 直接從節點上的 <code>/etc/kubernetes/manifests/</code> 目錄拉起、不經由 apiserver 排程的 Pod。控制平面的四個元件（kube-apiserver、kube-controller-manager、kube-scheduler、etcd）在 kubeadm 叢集裡都以 static pod 形式運行——想讓某個元件「消失」，搬走對應 manifest 即可。</dd>
+</dl>
+
+<h2>物件與工作負載</h2>
+<dl class="term">
+  <dt>Label（標籤）</dt>
+  <dd>附加在物件上的鍵值對，用於組織與選取物件。Selector 依標籤選擇物件。</dd>
+
+  <dt>Annotation（註解）</dt>
+  <dd>附加在物件上的鍵值對，僅附帶資訊（如記錄 change-cause），<strong>不可</strong>被 selector 選取——與 Label 的關鍵差別。</dd>
+
+  <dt>Selector（選擇器）</dt>
+  <dd>依 Label 挑選物件的條件。Deployment 用 selector 認領自己的 ReplicaSet，ReplicaSet 用 selector 認領自己的 Pod——控制器「認人」全靠它。分兩種寫法：<strong>equality-based</strong>（等值式，運算子 <code>=</code>、<code>!=</code>）與 <strong>set-based</strong>（集合式，運算子 <code>in</code>、<code>notin</code>、存在與否）。kubectl 用 <code>-l</code> 帶入。</dd>
+
+  <dt>Declarative（宣告式）vs Imperative（指令式）</dt>
+  <dd>宣告式：描述「期望狀態」（寫 YAML 交給 kubectl apply）；指令式：直接下「做什麼」（kubectl run）。Kubernetes 本質上偏宣告式。</dd>
+
+  <dt>Deployment</dt>
+  <dd>管理工作負載的控制器，負責聲明期望副本數並執行滾動更新與回滾。它不直接管 Pod，而是透過管理 ReplicaSet 來達成。</dd>
+
+  <dt>ReplicaSet</dt>
+  <dd>確保指定數量的 Pod 同時運行的控制器。通常被 Deployment 管理——Deployment 是它的「老闆」。Pod 數量不正確時由它補齊或縮減。</dd>
+
+  <dt>DaemonSet</dt>
+  <dd>確保<strong>每台節點</strong>恰好運行一顆 Pod 的控制器，適合節點級背景服務（日誌收集、監控 agent、CNI）。叢集新增節點時自動長一顆、節點移除時跟著收掉。它直接管理 Pod（中間沒有 ReplicaSet）。kubectl <strong>沒有</strong> <code>kubectl create daemonset</code> 指令，只能寫 YAML。</dd>
+
+  <dt>Job</dt>
+  <dd>負責「跑完就結束」任務的控制器。關鍵欄位：<code>completions</code>、<code>parallelism</code>、<code>backoffLimit</code>。Pod 的 <code>restartPolicy</code> 只能是 <code>Never</code> 或 <code>OnFailure</code>。<code>kubectl create job</code> 只有 <code>--image</code>／<code>--from</code>——批次欄位必須寫 YAML。它的自我修復是「補失敗、不補成功」。</dd>
+
+  <dt>CronJob</dt>
+  <dd>按 cron 排程（五欄時間）<strong>定時建立 Job</strong> 的控制器。控制器鏈：CronJob → Job → Pod。適合定時備份、定期清理等週期性工作。</dd>
+
+  <dt>Rolling Update（滾動更新）</dt>
+  <dd>Deployment 換版的方式：逐批建立新 Pod、移除舊 Pod，過程中隨時有可用副本，服務不中斷。</dd>
+
+  <dt>Rollback（回滾）</dt>
+  <dd>把 Deployment 退回先前的 revision（版本）。用 <code>kubectl rollout undo</code> 執行，CKA 常考。回滾本身也會產生一個新的 REVISION。</dd>
+
+  <dt>watch（-w）</dt>
+  <dd>kubectl 旗標（如 <code>kubectl get pods -w</code>）：先印出目前快照，再持續串流顯示物件的後續變化，直到 Ctrl+C。</dd>
+</dl>
+
+<h2>資源、排程、設定與健康</h2>
+<dl class="term">
+  <dt>requests（資源請求）</dt>
+  <dd>Pod 宣告「至少要這麼多」的資源額度（CPU／memory）。kube-scheduler 排程時以「節點上所有 Pod 的 requests 總和」為帳本；<code>describe node</code> 的 <code>Allocated resources</code> 就是這本帳。</dd>
+
+  <dt>limits（資源上限）</dt>
+  <dd>Pod 宣告「最多用這麼多」的使用天花板。CPU 超過會被節流（throttle）；memory 超過容器會被 <strong>OOMKilled</strong>。</dd>
+
+  <dt>QoS Class（服務品質等級）</dt>
+  <dd>依 Pod 的 requests／limits 寫法歸類：<strong>Guaranteed</strong>（有寫且 requests＝limits）、<strong>Burstable</strong>（有寫但不等）、<strong>BestEffort</strong>（全沒寫）。等級越低，OOM 時越早被殺。</dd>
+
+  <dt>Taint（污點）</dt>
+  <dd>標記在節點上、用來「排斥」Pod 的屬性。效果有三種：<code>NoSchedule</code>（不排新的）、<code>PreferNoSchedule</code>（盡量不排）、<code>NoExecute</code>（不排新的，<strong>並逐出已在上面且無 toleration 的 Pod</strong>）。正式叢集的 control-plane 節點帶有 <code>node-role.kubernetes.io/control-plane:NoSchedule</code>。語法：<code>kubectl taint node &lt;節點&gt; &lt;key&gt;=&lt;value&gt;:&lt;Effect&gt;</code>，移除加 <code>-</code>。</dd>
+
+  <dt>Toleration（容忍）</dt>
+  <dd>寫在 Pod 上、用來「容忍」特定污點的屬性。toleration 的 key／value（operator=Equal 時）／effect 三者都與污點對應，Pod 才被允許排到帶該污點的節點。容忍只是「允許」不是「偏好」；想逐出前寬限可用 <code>tolerationSeconds</code>（僅 NoExecute）。</dd>
+
+  <dt>nodeSelector（節點選擇器）</dt>
+  <dd>Pod 的 <code>spec.nodeSelector</code>：要求節點必須帶指定 label 才排得上去。只能表達「等於」，是 nodeAffinity 的簡化版。</dd>
+
+  <dt>Node Affinity（節點親和性）</dt>
+  <dd>Pod 的 <code>spec.affinity.nodeAffinity</code>：更強的表達力。<code>requiredDuringSchedulingIgnoredDuringExecution</code>＝硬性（等同 nodeSelector 但支援 In/NotIn）；<code>preferredDuringSchedulingIgnoredDuringExecution</code>＝軟性「盡量」。</dd>
+
+  <dt>ConfigMap</dt>
+  <dd>存放非機密設定的物件（明文），namespace 層級、上限約 1MiB。注入方式：<code>envFrom</code>（整包）、<code>valueFrom.configMapKeyRef</code>（單鍵）、volume 掛載（鍵變檔名）。volume 掛載的更新約 1 分鐘內由 kubelet 同步；env 注入不隨設定更新。</dd>
+
+  <dt>Secret</dt>
+  <dd>存放機密資料的物件，值以 <strong>base64 編碼</strong>存在 <code>data</code>（可用 <code>stringData</code> 寫明文、存檔自動轉換）。<strong>base64 不是加密</strong>；<code>describe</code> 只顯示大小。掛載成檔案的預設權限是 <strong>0644</strong>（與 ConfigMap 相同；想收緊就在 volume 設 <code>defaultMode: 0400</code>）。</dd>
+
+  <dt>Probe（探針）</dt>
+  <dd>kubelet 對容器做的週期健康檢查，三種實作：<code>exec</code>、<code>httpGet</code>、<code>tcpSocket</code>。參數 <code>initialDelaySeconds</code>／<code>periodSeconds</code>／<code>failureThreshold</code> 控制節奏與容忍度。</dd>
+
+  <dt>Liveness Probe</dt>
+  <dd>問「容器還活著嗎」。失敗→容器被殺掉重啟（RESTARTS 上升）。啟動很慢的容器若被它誤殺，改用 startupProbe 護航。</dd>
+
+  <dt>Readiness Probe</dt>
+  <dd>問「容器可以接流量嗎」。失敗→Pod 從 Service 的 Endpoints <strong>摘除</strong>（不重啟）。症狀：Pod Running 但 READY 0/1。</dd>
+
+  <dt>Startup Probe</dt>
+  <dd>問「容器啟動完成了嗎」。成功前不會跑 liveness／readiness，保護啟動需要很久的容器不被誤殺。</dd>
+
+  <dt>HorizontalPodAutoscaler（HPA）</dt>
+  <dd>依 metrics API 的用量自動調整 Deployment／ReplicaSet 副本數的控制器。分母是 Pod 的 <code>requests.cpu</code>；沒寫 requests 或 metrics-server 沒資料時 TARGETS 顯示 <code>&lt;unknown&gt;</code>。</dd>
+
+  <dt>metrics-server</dt>
+  <dd>叢集級的用量蒐集器，把節點與 Pod 的 CPU／memory 餵給 metrics API，是 <code>kubectl top</code> 與 HPA 的前提。kind 安裝後需加 <code>--kubelet-insecure-tls</code>。</dd>
+</dl>
+
+<h2>儲存</h2>
+<dl class="term">
+  <dt>PersistentVolume（PV）</dt>
+  <dd>實際的儲存空間（NFS、雲端磁碟、hostPath…），叢集資源、不屬於任何 namespace。狀態：Available → Bound → Released；回收策略 Retain 會讓它停在 Released。</dd>
+
+  <dt>PersistentVolumeClaim（PVC）</dt>
+  <dd>「我要多大、什麼存取模式」的請求單，有 namespace。Kubernetes 依條件（容量、accessModes、storageClassName）找一顆符合的 PV 綁定；搭配預設 StorageClass 則會動態現做。</dd>
+
+  <dt>StorageClass</dt>
+  <dd>「動態供應」的工廠：PVC 一來就照參數（provisioner、reclaimPolicy、bindingMode）現做一顆 PV。kind 內建 local-path provisioner、類別名 <code>standard</code>。PVC 寫 <code>storageClassName: ""</code> 會關閉動態供應、去配靜態 PV。</dd>
+
+  <dt>Access Mode（存取模式）</dt>
+  <dd>PV/PVC 的掛載能力宣告：RWO（單節點讀寫）、ROX（多節點唯讀）、RWX（多節點讀寫，需共享儲存）。</dd>
+
+  <dt>Reclaim Policy（回收策略）</dt>
+  <dd>PV 被釋放後如何處理：<strong>Delete</strong>＝連底層儲存一起刪（動態供應常見）；<strong>Retain</strong>＝磁碟保留、PV 標成 Released 等管理者接手。PVC 刪掉 PV 卻還在，多半是 Retain。</dd>
+
+  <dt>CSI（Container Storage Interface）</dt>
+  <dd>Kubernetes 與儲存廠商之間的外掛標準，讓任何廠商（雲端磁碟、NFS…）不用改核心就能提供 volume。口訣：CSI 管「存」。</dd>
+</dl>
+
+<h2>網路</h2>
+<dl class="term">
+  <dt>Service</dt>
+  <dd>一群 Pod 前面的「穩定入口」：selector 打到哪些 Pod，Endpoints 就列誰，kube-proxy 在節點上寫規則轉發。類型：ClusterIP、NodePort、LoadBalancer、ExternalName。</dd>
+
+  <dt>ClusterIP</dt>
+  <dd>Service 的預設類型：一個只活在叢集內的虛擬 IP（VIP）。它是 iptables/IPVS 規則做出來的「假 IP」，所以 <strong>ping 不通很正常，要用 TCP 測</strong>。</dd>
+
+  <dt>NodePort</dt>
+  <dd>ClusterIP + 每台節點開一個 30000–32767 的 port。外部打「任一節點 IP:該 port」都能進叢集（每台節點都開同一個 port）。</dd>
+
+  <dt>LoadBalancer</dt>
+  <dd>NodePort + 雲端供應商幫你生一個對外負載平衡器。kind 沒有雲端整合，需要 MetalLB 之類的方案（概念即可）。</dd>
+
+  <dt>Endpoints / EndpointSlice</dt>
+  <dd>「Service 身後此刻有哪些 Pod IP:Port」的清單，由 Endpoints 控制器依 selector 自動維護。除錯 Service 的第一站：<code>kubectl get endpoints NAME</code>——空＝selector 沒打到或 Pod 不 Ready。</dd>
+
+  <dt>Headless Service</dt>
+  <dd><code>clusterIP: None</code> 的 Service：不配 VIP、不做轉發，讓 DNS 直接回傳每顆 Pod 的 IP。適合資料庫主從這類要「直接連各顆 Pod」的情境。</dd>
+
+  <dt>CoreDNS</dt>
+  <dd>叢集內建的 DNS 伺服器（Deployment，跑在 kube-system，Service 名叫 <code>kube-dns</code>）。watch Service/Pod 產生 DNS 紀錄；設定在 ConfigMap <code>coredns</code> 的 Corefile。</dd>
+
+  <dt>Service Discovery（服務發現）</dt>
+  <dd>Pod 用「名字」找到 Service 的機制。FQDN 樣板：<code>&lt;service&gt;.&lt;namespace&gt;.svc.cluster.local</code>；短名靠 <code>/etc/resolv.conf</code> 的 search 欄自動補後綴。</dd>
+
+  <dt>Ingress</dt>
+  <dd>L7（HTTP/HTTPS）路由規則：宣告 host＋path 轉到哪個 Service。它只是資料，要靠 Ingress Controller 執行。</dd>
+
+  <dt>IngressClass</dt>
+  <dd>「指名用哪家 Ingress Controller」的接頭。Ingress 資源用 <code>ingressClassName</code> 引用它；一個叢集可同時有多家 Controller。</dd>
+
+  <dt>Ingress Controller</dt>
+  <dd>真正收外部流量、把 Ingress 規則翻譯成實際設定的程式（如 ingress-nginx）。ADDRESS 空著通常代表 Controller 沒起來。</dd>
+
+  <dt>Gateway API</dt>
+  <dd>Ingress 的下一代 API：用 CRD 拆成 GatewayClass／Gateway／HTTPRoute 等角色，表達力更強（headers 路由、權重、跨 namespace）。CKA 考概念即可。</dd>
+
+  <dt>NetworkPolicy</dt>
+  <dd>叢集內防火牆的 API：宣告哪些來源可連到哪些 Pod 的哪些 port。預設全通；一出現 policy，被選中的方向（Ingress/Egress）就翻成預設拒絕。要支援它的 CNI（如 Calico）才真的執行——kindnet 不支援。</dd>
+
+  <dt>CNI（Container Network Interface）</dt>
+  <dd>把容器接上叢集網路、分配 Pod IP 的標準介面。實作：kindnet（輕量、不實作 NetworkPolicy）、Calico、Cilium、Flannel 等。口訣：CNI 管「網」。</dd>
+
+  <dt>Calico</dt>
+  <dd>老牌 CNI 實作，用 BGP／VXLAN 建 Pod 網路，並以 iptables/eBPF 實作 NetworkPolicy。kind 安裝方式見 0012。</dd>
+</dl>
+
+<h2>叢集管理與安全</h2>
+<dl class="term">
+  <dt>ServiceAccount</dt>
+  <dd>Pod 用的「身分」。Pod 以 <code>serviceAccountName</code> 指名後，token 會自動掛進 <code>/var/run/secrets/kubernetes.io/serviceaccount</code>。本身不授權，權限靠 RBAC 另外給。</dd>
+
+  <dt>RBAC</dt>
+  <dd>Role-Based Access Control：以「角色」管理授權。核心四物件：Role／ClusterRole（權限）、RoleBinding／ClusterRoleBinding（綁定）。驗證工具：<code>kubectl auth can-i</code>。</dd>
+
+  <dt>Role</dt>
+  <dd>namespace 層級的權限清單（rules：apiGroups＋resources＋verbs）。</dd>
+
+  <dt>RoleBinding</dt>
+  <dd>把 Role 或 ClusterRole 綁給身分，<strong>只在某 namespace 內生效</strong>。ClusterRole × RoleBinding＝被侷限回該 namespace（考點）。</dd>
+
+  <dt>ClusterRole</dt>
+  <dd>叢集層級的權限清單，可用於 node、PV 等叢集資源。</dd>
+
+  <dt>ClusterRoleBinding</dt>
+  <dd>把 ClusterRole 綁給身分，<strong>全叢集生效</strong>。內建常用 ClusterRole：view／edit／cluster-admin。</dd>
+
+  <dt>kubeadm</dt>
+  <dd>官方叢集建置工具。init 產生憑證與 kubeconfig、把控制平面寫成 <code>/etc/kubernetes/manifests</code> 的 static pod、發出 bootstrap token；join 讓 worker／額外 cp 加入。token 過期用 <code>kubeadm token create --print-join-command</code> 重生。</dd>
+
+  <dt>HA（高可用）控制平面</dt>
+  <dd>多台 control-plane 用負載平衡器共享 apiserver 流量。拓撲分 <strong>stacked etcd</strong>（etcd 與 cp 同台）與 <strong>external etcd</strong>（etcd 獨立主機）。</dd>
+
+  <dt>kubeconfig（kubectl 組態檔）</dt>
+  <dd>定義叢集、使用者與 context 的檔案（預設 <code>~/.kube/config</code>）。kubeadm 產出管理員版的 <code>/etc/kubernetes/admin.conf</code>。也代表各元件的「身分證」（admin/controller-manager/scheduler/kubelet 各一把）。</dd>
+
+  <dt>etcdctl</dt>
+  <dd>etcd 的命令列客戶端。備份/還原三大指令：<code>snapshot save</code>、<code>snapshot status</code>、<code>snapshot restore</code>；指令前慣例加 <code>ETCDCTL_API=3</code>。</dd>
+
+  <dt>Snapshot（etcd 快照）</dt>
+  <dd>把整個 etcd 資料庫倒成的單一檔案。restore 會把它解成一個<strong>新的資料目錄</strong>（非原地復活），再接回給 etcd。還原點＝快照時間點。</dd>
+
+  <dt>cordon</dt>
+  <dd>把節點標成不可排程（SchedulingDisabled）：不再排新 Pod，但<strong>不驅離</strong>已在跑的 Pod。</dd>
+
+  <dt>drain</dt>
+  <dd>cordon＋把節點上的 Pod 安全驅離（evict）到別處。常配 <code>--ignore-daemonsets</code>；DaemonSet 的 Pod 不該被搬走。</dd>
+
+  <dt>uncordon</dt>
+  <dd>解除不可排程標記，讓節點恢復收 Pod。</dd>
+
+  <dt>kubeadm upgrade（kubeadm 升級）</dt>
+  <dd>升級叢集的流程：一次一小版、cp 先 node 後；每台節點內「升 kubeadm → <code>upgrade apply</code>（cp）／<code>upgrade node</code>（worker）→ 升 kubelet 並重啟」。憑證檢查：<code>kubeadm certs check-expiration</code>／<code>renew all</code>。</dd>
+</dl>
+
+<h2>發佈與擴充</h2>
+<dl class="term">
+  <dt>Helm</dt>
+  <dd>Kubernetes 的套件管理員。把一整組 YAML（Deployment/Service/…）打包成 chart 安裝；一次安裝叫一個 <strong>release</strong>，可 <code>upgrade</code>／<code>rollback</code>／<code>uninstall</code>。</dd>
+
+  <dt>Chart（Helm 圖表）</dt>
+  <dd>Helm 的套件格式：模板 + values 預設值 + 中繼資料。安裝時可用 <code>--set</code> 或 values 檔覆寫預設值。</dd>
+
+  <dt>Kustomize</dt>
+  <dd>不寫模板的宣告式組態工具：base（基底）＋overlay（疊加差異）。<code>kubectl apply -k 目錄</code> 套用；<code>kubectl kustomize 目錄</code> 先預覽。</dd>
+
+  <dt>CRD（Custom Resource Definition）</dt>
+  <dd>定義「新品種 API 資源」的資源。apply CRD 之後，kubectl 就認得新資源型別（apiVersion 是 group/version）。</dd>
+
+  <dt>Custom Resource（自訂資源）</dt>
+  <dd>CRD 定義型別之後被建立的實例。會被 apiserver 接受並存進 etcd，但<strong>沒有 controller 的話只是一筆資料</strong>。</dd>
+
+  <dt>Operator</dt>
+  <dd>「watch 某種 CR、把它變成實際資源」的控制器（控制器模式延伸到自訂資源）。例：prometheus-operator 看 Prometheus CR 建出整套監控。</dd>
+</dl>
+
+<h2>故障排除與備考</h2>
+<dl class="term">
+  <dt>CrashLoopBackOff</dt>
+  <dd>容器不斷「啟動→失敗→重啟」的狀態（指數退避）。診斷：<code>logs</code>、<code>logs --previous</code> 看上次死因。</dd>
+
+  <dt>ImagePullBackOff</dt>
+  <dd>映像拉取失敗的狀態（前身 ErrImagePull）。根因多半寫在 describe 的 Events（tag 不存在、映像名錯）。</dd>
+
+  <dt>OOMKilled</dt>
+  <dd>容器用量超過 memory limit 被核心殺掉。指紋：Exit Code 137（128+9 SIGKILL）、describe 的 Reason=OOMKilled。</dd>
+
+  <dt>Pending</dt>
+  <dd>Pod 排不上去的狀態。看 describe 的 Events：Insufficient memory/cpu、nodeSelector 沒節點、taint 沒 toleration 都寫在這裡。</dd>
+
+  <dt>FailedScheduling（排程失敗事件）</dt>
+  <dd>Pod 排不上任何節點時，scheduler 記在「該 Pod」身上的 Warning 事件（<code>describe pod</code> 的 Events 可見），訊息形如 <code>0/N nodes are available: … Insufficient cpu/memory</code>，也會混入 taint／nodeSelector 等其他理由。對照 <code>describe node</code> 的 Allocated resources（節點帳本）即可定位「排不下」。</dd>
+
+  <dt>Node Conditions（節點條件）</dt>
+  <dd><code>describe node</code> 的 Conditions 區塊。Ready=False 查 kubelet；MemoryPressure／DiskPressure／PIDPressure 代表節點資源告急。</dd>
+
+  <dt>Killer.sh</dt>
+  <dd>CKA 官方指定的模擬考環境（購考附 2 次、各 36 小時、17 題，與真實考試同介面）。考前衝刺用它計時演練。</dd>
+</dl>
+
+<hr>
+
+<h2>學習地圖</h2>
+<ul>
+  <li><a href="cka-domain-map.html">CKA 考綱領域地圖（含完整 20 課課程目錄）</a></li>
+  <li><a href="../lessons/0001-k8s-architecture-mental-model.html">Lesson 0001 — 叢集架構與你嘅第一個 Pod</a></li>
+  <li><a href="../lessons/0002-imperative-kubectl-and-hands-on-lab.html">Lesson 0002 — Deployment、自我修復與 Rollout/Rollback</a></li>
+  <li>後續課程（0003–0020 港式圖解版）請見 <a href="cka-domain-map.html">cka-domain-map 學習地圖</a>（按 Phase 分組）。</li>
+  <li>延伸閱讀：<a href="https://kubernetes.io/docs/reference/glossary/">官方詞彙表</a></li>
+</ul>
+
+<div class="lesson-footer">
+  詞彙表隨課程擴充（0005–0020 預產出時補至 91 詞、依主題分群）。發現需要新增的術語，請向講師（agent）提出。
+</div>
+
+</body>
+</html>

@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0009 — Service 同 Endpoints：唔變嘅存取門口</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 3 · 對應考綱：<a href="../reference/cka-domain-map.html">Services &amp; Networking（20%）</a> · 需時約 25 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第九課 · 穩定門口</span>
+  <h1>Lesson 0009：Service 同 Endpoints：唔變嘅存取門口</h1>
+  <p><strong>目標：</strong>搞掂 Service 呢個「唔會變嘅 VIP 門口」——識用 selector 射中 Pod、睇明 Endpoints 名單點自動更新，再親手行通 ClusterIP、NodePort 同 Headless 三條路。考場見到 Service 唔通，一眼知係邊層瀨嘢！</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  Pod 嘅 IP 成日生生死死、轉頭就換，你唔可以叫成個叢集背 IP 嚟搵人。Service 就係嗰個「貼地門牌」——Pod 換咗幾多次，客都係打同一個 VIP。呢個 selector → Endpoints → 轉發嘅諗法，係成個 Phase 3 嘅地基，DNS、Ingress、NetworkPolicy 全部建喺佢上面！
+</div>
+
+<h2>1. Service 嘅組成：selector → Endpoints → 轉發</h2>
+<p>入到 Phase 3（Services &amp; Networking，20%）。之前啲 Pod 各有各活：0008 你見過 Pod 可以死、資料唔會死——咁「人哋點搵到佢」呢？答案就係 <a href="../reference/glossary.html">Service</a>：一個<strong>唔跟 Pod 變嘅虛擬 IP（VIP）門口</strong>，selector 射中邊幾粒 Pod，佢就將流量交畀邊個。今課先建立「Service 思維」，下課再加 DNS。今課部機沿用 0008 嗰個雙節點叢集。</p>
+
+<div class="diagram-card">
+  <h3>🚪 Service 雙線圖：控制線（虛線）vs 數據線（實線）</h3>
+  <svg class="svg-diagram" viewBox="0 0 780 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Service control lane and data lane diagram">
+    <text x="20" y="24" font-size="13" font-weight="bold" fill="#633">控制線 Control lane（虛線：唔行流量，只換名單）</text>
+    <rect x="20" y="32" width="740" height="130" rx="8" fill="#fffbeb" stroke="#d4a72c" stroke-width="1.5" stroke-dasharray="7 5"/>
+    <g transform="translate(30, 55)">
+      <rect width="165" height="90" rx="8" fill="#ffffff" stroke="#8250df" stroke-width="2"/>
+      <text x="10" y="22" font-size="12" font-weight="bold" fill="#8250df">Endpoint 控制器</text>
+      <text x="10" y="42" font-size="11" fill="#333">watch Pod</text>
+      <text x="10" y="59" font-size="11" fill="#333">Ready 先收錄</text>
+      <text x="10" y="76" font-size="11" fill="#666">當更紙執筆人</text>
+    </g>
+    <g transform="translate(215, 55)">
+      <rect width="175" height="90" rx="8" fill="#ffffff" stroke="#8250df" stroke-width="2"/>
+      <text x="10" y="22" font-size="12" font-weight="bold" fill="#8250df">Endpoints 名單</text>
+      <text x="10" y="42" font-size="11" fill="#333">10.244.0.5:80</text>
+      <text x="10" y="59" font-size="11" fill="#333">10.244.1.7:80</text>
+      <text x="10" y="76" font-size="11" fill="#666">當更紙：邊個當更</text>
+    </g>
+    <g transform="translate(410, 55)">
+      <rect width="165" height="90" rx="8" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="10" y="22" font-size="12" font-weight="bold" fill="#0969da">kube-proxy watch</text>
+      <text x="10" y="42" font-size="11" fill="#333">睇 Service+Endpoints</text>
+      <text x="10" y="59" font-size="11" fill="#333">DaemonSet：粒粒 Node 有</text>
+      <text x="10" y="76" font-size="11" fill="#666">樓面經理收紙</text>
+    </g>
+    <g transform="translate(595, 55)">
+      <rect width="155" height="90" rx="8" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="10" y="22" font-size="12" font-weight="bold" fill="#0969da">寫 iptables</text>
+      <text x="10" y="42" font-size="11" fill="#333">每粒 Node 各寫一份</text>
+      <text x="10" y="59" font-size="11" fill="#333">VIP → PodIP DNAT</text>
+      <text x="10" y="76" font-size="11" fill="#666">枱號對位圖</text>
+    </g>
+    <path d="M 195 100 L 213 100" stroke="#8250df" stroke-width="2.5" stroke-dasharray="6 4"/>
+    <polygon points="213,100 205,95 205,105" fill="#8250df"/>
+    <path d="M 390 100 L 408 100" stroke="#8250df" stroke-width="2.5" stroke-dasharray="6 4"/>
+    <polygon points="408,100 400,95 400,105" fill="#8250df"/>
+    <path d="M 575 100 L 593 100" stroke="#0969da" stroke-width="2.5" stroke-dasharray="6 4"/>
+    <polygon points="593,100 585,95 585,105" fill="#0969da"/>
+    <text x="20" y="192" font-size="13" font-weight="bold" fill="#1a7f37">數據線 Data lane（實線：真流量咁行）</text>
+    <rect x="20" y="200" width="740" height="170" rx="8" fill="#f0fdf4" stroke="#1a7f37" stroke-width="1.5"/>
+    <g transform="translate(30, 225)">
+      <rect width="150" height="110" rx="8" fill="#ffffff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#1a7f37">client Pod</text>
+      <text x="10" y="44" font-size="11" fill="#333">10.244.0.10</text>
+      <text x="10" y="62" font-size="11" fill="#333">curl VIP:80</text>
+      <text x="10" y="82" font-size="11" fill="#666">茶客：淨記電話</text>
+    </g>
+    <g transform="translate(200, 225)">
+      <rect width="160" height="110" rx="8" fill="#ddf4ff" stroke="#0969da" stroke-width="2.5"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#0969da">Service VIP:80</text>
+      <text x="10" y="44" font-size="11" fill="#333">10.96.123.45:80</text>
+      <text x="10" y="62" font-size="11" fill="#333">唔變電話 ☎</text>
+      <text x="10" y="82" font-size="11" fill="#666">假 IP：ping 唔通</text>
+    </g>
+    <g transform="translate(380, 225)">
+      <rect width="180" height="110" rx="8" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#0969da">Node iptables DNAT</text>
+      <text x="10" y="44" font-size="11" fill="#333">Node1 + Node2 各一份</text>
+      <text x="10" y="62" font-size="11" fill="#333">kube-proxy 喺每粒 Node</text>
+      <text x="10" y="82" font-size="11" fill="#333">🔧 樓面經理派位</text>
+      <text x="10" y="99" font-size="11" fill="#666">VIP → 10.244.x.x:80</text>
+    </g>
+    <g transform="translate(580, 225)">
+      <rect width="170" height="110" rx="8" fill="#f6fbf7" stroke="#1a7f37" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#1a7f37">PodIP:80</text>
+      <text x="10" y="44" font-size="11" fill="#333">10.244.0.5 / 10.244.1.7</text>
+      <text x="10" y="62" font-size="11" fill="#333">輪流接客（隨機派）</text>
+      <text x="10" y="82" font-size="11" fill="#666">伙記：邊個得閒做邊個</text>
+    </g>
+    <path d="M 180 280 L 198 280" stroke="#1a7f37" stroke-width="3"/>
+    <polygon points="198,280 188,275 188,285" fill="#1a7f37"/>
+    <path d="M 360 280 L 378 280" stroke="#1a7f37" stroke-width="3"/>
+    <polygon points="378,280 368,275 368,285" fill="#1a7f37"/>
+    <path d="M 560 280 L 578 280" stroke="#1a7f37" stroke-width="3"/>
+    <polygon points="578,280 568,275 568,285" fill="#1a7f37"/>
+    <rect x="20" y="390" width="740" height="72" rx="6" fill="#fff8c5" stroke="#d4a72c" stroke-width="1.5"/>
+    <text x="35" y="414" font-size="12" fill="#633">☎ 茶樓比喻：VIP＝茶樓唔變嘅電話；Endpoints＝每日當更紙（邊個伙記返工）；kube-proxy＝樓面經理，照紙派客去唔同伙記。</text>
+    <text x="35" y="436" font-size="12" fill="#633">虛線唔載客、實線先載客——瀨嘢先問：係當更紙錯（Endpoints 吉），定係樓面冇派位（kube-proxy 規則）？</text>
+    <rect x="20" y="472" width="740" height="60" rx="6" fill="#fff1f2" stroke="#cf222e" stroke-width="1.5"/>
+    <text x="35" y="495" font-size="12" fill="#7a1f1f">VIP 係假 IP：ping 唔通好正常，要用 curl（TCP）嚟測！iptables 模式預設隨機派；IPVS 模式先係真 load-balancer。</text>
+    <text x="35" y="515" font-size="12" fill="#7a1f1f">kube-proxy 係 DaemonSet 概念：每粒 Node 都有一份，一粒 Node 嘅規則爛唔代表全部爛。</text>
+  </svg>
+  <p><strong>點讀呢幅圖：</strong>上面虛線係「換名單」嘅過程（Pod 死 → 名單換 → 規則重寫），下面實線係「行流量」嘅過程（客永遠打同一個 VIP）。兩條線分開睇，就唔會再以為 Service 自己會轉發封包。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">Service 將流量交畀生勾勾嘅 Pod（概念圖）</div>
+  <pre>              Service（穩定 VIP：10.96.x.x）
+                     │ selector: app=web
+                     ▼
+              Endpoints（此刻嘅 Pod IP 名單）
+                ├── 10.244.0.5:80
+                └── 10.244.1.7:80
+                     │ kube-proxy 喺每粒節點寫 iptables/IPVS 規則
+                     ▼
+             流量轉去名單上嘅 Pod（會輪流）</pre>
+</div>
+
+<p>Service 自己唔做轉發——真正落手做嘅係每粒節點上面嘅 <a href="../reference/glossary.html">kube-proxy</a>：佢 watch 住 Service 同 Endpoints，將「去 VIP:Port 嘅封包」改寫成「去某粒 Pod IP:Port」。kube-proxy 有兩種行法：<strong>iptables</strong>（預設，規則式）同 <strong>IPVS</strong>（核心內置嘅負載平衡，規則多嗰陣效能好啲）——概念知就得，考試多數只問「邊個喺節點上面實作 Service 規則」＝ kube-proxy。</p>
+
+<h2>2. Service 四大類型，一表睇晒</h2>
+
+<table>
+  <thead>
+    <tr><th>類型</th><th>對外範圍</th><th>一句話</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>ClusterIP</strong>（預設）</td>
+      <td>叢集內</td>
+      <td>只畀叢集內互相嗌用嘅 VIP</td>
+    </tr>
+    <tr>
+      <td><strong>NodePort</strong></td>
+      <td>叢集外（靠節點 IP）</td>
+      <td>ClusterIP ＋ 每粒節點開個 30000–32767 嘅 port 收外面流量</td>
+    </tr>
+    <tr>
+      <td><strong>LoadBalancer</strong></td>
+      <td>叢集外（雲端）</td>
+      <td>NodePort ＋ 雲幫你生個對外負載平衡器（kind 冇雲，要 MetalLB 等）</td>
+    </tr>
+    <tr>
+      <td><strong>ExternalName</strong></td>
+      <td>—</td>
+      <td>純 DNS 嘅 CNAME 轉址，冇 VIP 亦冇 selector</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="tip box">
+  <div class="box-title">VIP 經典考點：ping 唔通、curl 通</div>
+  <p>ClusterIP 係「iptables 規則做出嚟嘅假 IP」，唔係某部機上面嘅真網卡——所以 <code>ping &lt;VIP&gt;</code>（ICMP）一定唔通，但 <code>curl http://&lt;VIP&gt;/</code>（TCP）會通。考試如果有人用「ping 唔通即係 Service 爛咗」嚟考你，答案係：<strong>ping 唔通係正常，要用 TCP 嚟測。</strong></p>
+</div>
+
+<h2>3. 實作 A：ClusterIP 同 Endpoints 連動</h2>
+
+<div class="terminal box">
+  <div class="box-title">佈署、暴露、睇三樣嘢</div>
+  <pre><span class="comment"># 1. 佈 2 粒 nginx（0002 嘅老朋友）</span>
+<span class="prompt">kubectl create deployment web --image=nginx:1.25 --replicas=2</span>
+<span class="prompt">kubectl rollout status deployment/web</span>
+
+<span class="comment"># 2. expose 成 Service：冇畀 --type 即係 ClusterIP；--port=80 會自動捉 containerPort</span>
+<span class="prompt">kubectl expose deployment web --port=80</span>
+
+<span class="comment"># 3. 睇 Service：CLUSTER-IP 就係嗰個「唔會變嘅 VIP」</span>
+<span class="prompt">kubectl get svc web</span>
+
+<span class="comment"># 4. 睇 Endpoints：同名嘅 endpoints 物件列出此刻 2 粒 Pod 嘅 IP</span>
+<span class="prompt">kubectl get endpoints web</span>
+<span class="prompt">kubectl get pods -o wide -l app=web</span>
+<span class="comment">#    對一對：Endpoints 嘅 IP 就係嗰 2 粒 Pod 嘅 IP</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">由叢集內打 VIP</div>
+  <pre><span class="comment"># 5. 起粒長駐嘅 busybox 做「客」（0009–0010 都要用）</span>
+<span class="prompt">kubectl run client --image=busybox:1.36 --restart=Never -- sleep 3600</span>
+<span class="prompt">kubectl wait --for=condition=Ready pod/client</span>
+
+<span class="comment"># 6. 將 VIP 存入變數，用 wget 打佢（回 nginx 嘅 200 歡迎頁）</span>
+<span class="prompt">VIP=$(kubectl get svc web -o jsonpath='{.spec.clusterIP}')</span>
+<span class="prompt">echo $VIP</span>
+<span class="prompt">kubectl exec client -- wget -qO- "http://$VIP/" | head -n 5</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">斬走一粒 Pod，睇 Endpoints 自己更新</div>
+  <pre><span class="comment"># 7. 揀粒 Pod 刪走，即刻再睇 Endpoints</span>
+<span class="prompt">kubectl delete pod web-(隨機尾碼)</span>
+
+<span class="comment"># 8. -w 睇 Endpoints 變化：舊 IP 消失，新 Pod Ready 之後新 IP 補上</span>
+<span class="prompt">kubectl get endpoints web -w</span>
+<span class="comment">#    想親眼睇交替：開兩個 terminal，一邊跑呢行、另一邊去刪 Pod（Ctrl+C 結束）</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 4 步就係「Service 嘅真相」：佢冇自己嘅後端，selector 射中幾粒 Pod，Endpoints 就列幾個 IP。第 7–8 步係成個機制嘅精髓——<strong>Pod 換 IP、Service 唔使郁</strong>，Endpoints 控制器自動將名單換新，而你個客永遠只需要記住個 VIP。</p>
+</div>
+
+<div class="hk-callout">
+  <strong>🚶‍♂️ 四步眼見為憑（跟住行一次，真 IP 版）：</strong>
+  <ol>
+    <li><strong>攞 VIP（唔變電話）：</strong><code>kubectl get svc web</code> → <code>CLUSTER-IP 10.96.123.45</code>。抄低佢，之後三步佢一個字都唔會變。</li>
+    <li><strong>攞當更名單：</strong><code>kubectl get endpoints web</code> → <code>10.244.0.5:80, 10.244.1.7:80</code>；再 <code>kubectl get pods -o wide -l app=web</code> 對一對——Endpoints 嘅 IP 就係嗰兩粒 Pod 嘅 IP。</li>
+    <li><strong>斬一粒 Pod：</strong><code>kubectl delete pod web-xyz</code>。唔使驚，Deployment 會即刻補返粒新嘅（例如 <code>10.244.1.8</code>）。</li>
+    <li><strong>睇換紙全程：</strong><code>kubectl get endpoints web -w</code> 會見到舊 IP 變 <code>Terminating</code> 消失、新 IP 出現；再 <code>echo $VIP</code>——仲係 <code>10.96.123.45</code>，個客 <code>wget http://$VIP/</code> 照樣 200！</li>
+  </ol>
+  <p><strong>🐳 Docker -p 祖先 vs K8s VIP：</strong><code>docker run -p 8080:80</code> 係「部機開個真 port 對應個 container」——部機死，個 mapping 就冇。K8s Service 係再上一層嘅「虛擬電話」：VIP 唔綁任何一粒 Node，靠每粒 Node 嘅 kube-proxy 各自寫 iptables 實現。所以 Pod 換、Node 換，個電話都唔使換——呢層就係 K8s 比 Docker 多出嚟嘅穩定層。</p>
+</div>
+
+<h2>4. 實作 B：NodePort——將服務開到節點門口</h2>
+<p>ClusterIP 只活喺叢集入面；NodePort 喺每粒節點開個 30000–32767 嘅 port，外面（例如你部主機）打「節點 IP:嗰個 port」就入到嚟。真正由 host 連入去嘅示範留返 0011（嗰課會重建有 port mapping 嘅叢集），呢度先喺叢集內驗證條路係通嘅。</p>
+
+<div class="terminal box">
+  <div class="box-title">將 Service 升級做 NodePort</div>
+  <pre><span class="comment"># 9. 刪走舊 ClusterIP Service，轉用 NodePort 重開（乾淨示範）</span>
+<span class="prompt">kubectl delete service web</span>
+<span class="prompt">kubectl expose deployment web --type=NodePort --port=80 --name=web-np</span>
+
+<span class="comment"># 10. NODE(S) 欄：系統由 30000–32767 隨機派一個（例如 31234）</span>
+<span class="prompt">kubectl get svc web-np</span>
+
+<span class="comment"># 11. 查節點嘅 IP（INTERNAL-IP）</span>
+<span class="prompt">kubectl get nodes -o wide</span>
+<span class="comment">#    記低 kind-worker（或 control-plane）嘅 INTERNAL-IP，例如 172.18.0.3</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">喺叢集內行「外面入嚟嗰條路」</div>
+  <pre><span class="comment"># 12. 用變數砌出 NodeIP:NodePort，由 client pod 打</span>
+<span class="prompt">NODEIP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')</span>
+<span class="prompt">NODEPORT=$(kubectl get svc web-np -o jsonpath='{.spec.ports[0].nodePort}')</span>
+<span class="prompt">kubectl exec client -- wget -qO- "http://$NODEIP:$NODEPORT/" | head -n 5</span>
+<span class="comment">#    回 200 即係 NodePort 條路通咗：封包 → 節點 port → iptables → 某粒 Pod</span>
+
+<span class="comment"># 13. 驗證「邊粒節點嘅 NodePort 都到」：轉 control-plane 嘅 IP 再打一次</span>
+<span class="prompt">NODEIP2=$(kubectl get nodes -o jsonpath='{.items[1].status.addresses[?(@.type=="InternalIP")].address}')</span>
+<span class="prompt">kubectl exec client -- wget -qO- "http://$NODEIP2:$NODEPORT/" | head -n 5</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 13 步係關鍵：NodePort 係「每粒節點都開同一個 port、各自將流量轉入叢集」，所以<strong>無論打邊粒節點嘅 IP 都會通</strong>。LoadBalancer 其實就係「雲整部 LB，將流量送入任何一粒節點嘅 NodePort」——你識咗 NodePort，LoadBalancer 底層就明咗。</p>
+</div>
+
+<h2>5. 實作 C：Headless Service——唔要 VIP，直接畀 IP 名單</h2>
+<p>有啲場合（數據庫主從、StatefulSet）唔想行「VIP ＋ 隨機轉發」，想「DNS 直接回每粒 Pod 嘅 IP」。將 Service 嘅 <code>clusterIP</code> 設做 <code>None</code>，就係 <a href="../reference/glossary.html">Headless Service</a>：唔派 VIP、唔轉發，只負責將 selector 命中清單餵畀 DNS（細節下堂）。</p>
+
+<div class="terminal box">
+  <div class="box-title">起個 headless Service</div>
+  <pre><span class="comment"># 14. expose 嗰陣帶 --cluster-ip=None</span>
+<span class="prompt">kubectl expose deployment web --type=ClusterIP --name=web-hd --port=80 --cluster-ip=None</span>
+
+<span class="comment"># 15. CLUSTER-IP 顯示 None</span>
+<span class="prompt">kubectl get svc web-hd</span>
+
+<span class="comment"># 16. Endpoints 照樣列出身後 2 粒 Pod（headless 冇 VIP，但 selector 照常運作）</span>
+<span class="prompt">kubectl get endpoints web-hd</span>
+
+<span class="comment"># 17. 收尾：刪走練習物件（留返 client 畀下堂）</span>
+<span class="prompt">kubectl delete deployment web</span>
+<span class="prompt">kubectl delete svc web-np web-hd</span>
+<span class="prompt">kubectl get pods,svc,endpoints</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 起：<code>kubectl expose deployment NAME --port=80 [--type=NodePort|LoadBalancer|ClusterIP]</code>；快版 <code>kubectl create service nodeport NAME --tcp=80:80</code>。② 查後端：<code>kubectl get endpoints NAME</code>（連 Service 同名嘅 endpoints）對返 <code>get pods -o wide</code>。③ 除錯口訣：Service 唔通先查「<strong>selector 有冇射中 Pod</strong>」——<code>get endpoints</code> 吉嘅即係冇射中；再查 Pod 嘅 readiness（0007 嘅 READY 0/1）。④ NodePort 範圍 30000–32767。⑤ VIP ping 唔通好正常，用 TCP 測。⑥ kube-proxy 係「喺節點上面實作 Service 規則」嗰個人。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你識用 <code>expose</code> 起 ClusterIP Service，睇得明「selector → Endpoints → kube-proxy」條轉發鏈。</li>
+  <li>你親眼見到斬 Pod 之後 Endpoints 自動換新，Service 個 VIP 由頭到尾冇變過。</li>
+  <li>你用 NodePort 行通「外面 → 節點 → Pod」條路，仲驗證邊粒節點嘅 port 都通。</li>
+  <li>你起咗 headless Service，睇得明佢「唔要 VIP、淨畀 IP 名單」嘅定位。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">Service 嘅 selector 射中邊啲 Pod，會反映喺邊個物件？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">ConfigMap</button>
+    <button class="quiz-opt">Ingress</button>
+    <button class="quiz-opt">Endpoints</button>
+    <button class="quiz-opt">ReplicaSet</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">ClusterIP 個 VIP 點解 ping 唔通？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">佢係 iptables 規則</button>
+    <button class="quiz-opt">佢畀防火牆擋咗</button>
+    <button class="quiz-opt">佢根本冇 IP</button>
+    <button class="quiz-opt">佢已經閂咗</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">邊個喺每粒節點上面實作 Service 轉發規則？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kubelet</button>
+    <button class="quiz-opt">kube-proxy</button>
+    <button class="quiz-opt">CoreDNS</button>
+    <button class="quiz-opt">scheduler</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Service 畀咗你個「唔會變嘅 VIP」，但叢集入面啲 Pod 總唔可以個個背 IP。下堂主角係叢集嘅 DNS——<a href="../reference/glossary.html">CoreDNS</a>：點解 Pod 淨係識 Service 個名就搵到佢（<code>web</code>、<code>web.default.svc.cluster.local</code>），同埋瀨嘢嗰陣 DNS 層同 Endpoints 層點分。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/concepts/services-networking/service/">Service（官方文件）</a>同<a href="https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/">EndpointSlices（官方文件）</a> —— 今課嘅權威版。重點睇「Publishing Services (ServiceTypes)」同「Virtual IPs and service proxies」兩節，約 15 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0008-storage-pv-pvc.html">← 上一課：儲存 PV/PVC</a>
+  <a href="0010-coredns-service-discovery.html">下一課：CoreDNS 服務發現 ➔</a>
+</div>
+</div>
+</body>
+</html>

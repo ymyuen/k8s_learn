@@ -244,8 +244,8 @@
 <div class="terminal box">
   <div class="box-title">先回收 0001 的伏筆：control-plane 污點</div>
   <pre><span class="comment"># 18. 看兩台節點的 Taints：control-plane 掛著 NoSchedule 污點、worker 沒有</span>
-<span class="prompt">kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints[*].key</span>
-<span class="comment">#    kind-control-plane → node-role.kubernetes.io/control-plane
+<span class="prompt">kubectl get nodes -o 'custom-columns=NAME:.metadata.name,TAINTS:.spec.taints[*].key,EFFECT:.spec.taints[*].effect'</span>
+<span class="comment">#    kind-control-plane → node-role.kubernetes.io/control-plane / NoSchedule
 #    kind-worker        → &lt;none&gt;</span>
 
 <span class="comment"># 19. 佈 3 顆副本：沒有 toleration 的 Pod 進不了 control-plane——三顆全擠在 kind-worker</span>

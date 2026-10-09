@@ -162,6 +162,42 @@
   <p>第 7 步的 READY 0/1 是「liveness 與 readiness 分家」的最佳教材：容器沒被重啟（liveness 沒寫就預設通過），但 Service 不會把流量送給它。下課 0009 學 Service 時，這顆 READY 0/1 的 Pod 就會直接從 Endpoints 消失——現在先記住「READY 分母不滿 = 有探針失敗」。修復後 READY 立刻回到 1/1。</p>
 </div>
 
+<div class="terminal box">
+  <div class="box-title">startup-demo.yaml — 慢啟動容器 + startupProbe 護航</div>
+  <pre><span class="comment"># startup-demo.yaml — 容器要 45 秒才「啟動完成」，startupProbe 先擋著、liveness 暫不開跑（參考寫法，不動本課步驟）</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: startup-demo</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: busybox:1.36</span>
+<span class="prompt">    command: ["sh", "-c", "sleep 45; touch /tmp/started; sleep 600"]</span>
+<span class="prompt">    startupProbe:</span>
+<span class="prompt">      exec:</span>
+<span class="prompt">        command: ["cat", "/tmp/started"]</span>
+<span class="prompt">      periodSeconds: 5</span>
+<span class="prompt">      failureThreshold: 12      # 啟動預算 = 12 × 5 秒 = 60 秒，遠大於 45 秒的啟動時間</span>
+<span class="prompt">    livenessProbe:</span>
+<span class="prompt">      exec:</span>
+<span class="prompt">        command: ["cat", "/tmp/started"]</span>
+<span class="prompt">      periodSeconds: 5</span>
+<span class="comment">#    關鍵：liveness 沒寫 initialDelaySeconds。startup 成功前 liveness／readiness 都不跑，
+#    所以慢啟動不會被誤殺；startup 一成功，liveness 立刻接手。沒有 startupProbe 的年代，
+#    只能用 initialDelaySeconds 猜啟動時間——猜太短＝啟動到一半被殺（小抄 ② 的症狀）。</span>
+
+<span class="comment"># 想親眼看（約 2 分鐘，非本課編號步驟）：</span>
+<span class="prompt">nano startup-demo.yaml</span>
+<span class="prompt">kubectl apply -f startup-demo.yaml</span>
+<span class="prompt">kubectl get pod startup-demo -w</span>
+<span class="comment">#    前 45 秒：READY 0/1、RESTARTS 0——startup 還在等，沒有人被殺</span>
+<span class="prompt">kubectl describe pod startup-demo</span>
+<span class="comment">#    Events 連續幾次 "Startup probe failed"，45 秒後歸於安靜；READY 轉 1/1</span>
+<span class="prompt">kubectl delete pod startup-demo</span>
+<span class="prompt">rm -f startup-demo.yaml</span></pre>
+</div>
+
 <h2>實作 C：裝 metrics-server + HPA 現場擴縮</h2>
 <p>metrics-server 是叢集級的「用量蒐集器」，HPA 與 <code>kubectl top</code> 都靠它。先裝（本課裝好之後保留，後續課要用 <code>top</code>）：</p>
 
@@ -257,6 +293,7 @@
 <ul>
   <li>你親眼看到 liveness 失敗觸發容器重啟（RESTARTS 上升），並修好它。</li>
   <li>你看到 readiness 失敗造成 READY 0/1（容器活著但不接流量），並修好它。</li>
+  <li>你用 startupProbe 護航慢啟動容器：啟動完成前 liveness 不開跑（READY 0/1、RESTARTS 0），不必再拿 initialDelaySeconds 猜啟動時間。</li>
   <li>你在 kind 裝好 metrics-server，並用 <code>kubectl top</code> 驗證 metrics API。</li>
   <li>你用 <code>kubectl autoscale</code> 完成一次真實的 CPU 驅動擴縮：加壓長到多顆、停壓慢慢縮回。</li>
 </ul>

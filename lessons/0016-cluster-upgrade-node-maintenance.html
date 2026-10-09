@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0016 — 叢集升級與節點保養（Killercoda）</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 4 · 對應考綱：<a href="../reference/cka-domain-map.html">Cluster Architecture, Installation &amp; Configuration（25%）</a> · 需時約 35 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第十六課 · 升級唔斷線</span>
+  <h1>Lesson 0016：叢集升級與節點保養（Killercoda）</h1>
+  <p><strong>目標：</strong>用 <code>kubeadm upgrade</code> 將小版號推上去，再用 <code>cordon／drain／uncordon</code> 等節點安心落場保養。升級係 CKA 高頻實作題——次序、指令、旗標全部要熟到變反射！</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  0015 將個叢集起咗出嚟，呢課等佢「大個仔＋做保養」。CKA 最鍾意考升級：邊個先邊個後、一次升幾多、drain 要加咩旗，錯一步就成題瀨嘢。喺 Killercoda 拋棄式 VM 度練到熟，入考場先唔會手震！
+</div>
+
+<div class="warn box">
+  <div class="box-title">開場：先準備個「等升級」嘅叢集</div>
+  <p>沿用 0015 嘅 Killercoda 場景（如果 VM 已重置、要照 0015 重建：先 <code>apt-cache madison kubeadm</code> 查版本，再 <code>sudo apt-get install -y kubeadm=1.34.x-1.1 kubelet=1.34.x-1.1 kubectl=1.34.x-1.1</code> <strong>將三件套釘喺 1.34 之後先 init</strong>——直接 init 會拎到 repo 最新版，就冇得升喇）。本課假設有一部 control-plane 同一部 worker、Kubernetes 1.34.x，要升去 1.35.x。</p>
+</div>
+
+<h2>1. 睇下先：升級嘅核心規則</h2>
+<ul>
+  <li><strong>一次只升一個小版號</strong>（1.34 → 1.35），唔准跳版（1.33 → 1.35 唔得）。</li>
+  <li><strong>先 control plane、後 worker</strong>；同一個 control-plane 群都要逐部嚟。</li>
+  <li>每部節點內部次序固定：<strong>先升 kubeadm、再套用（upgrade apply/node）、最後升 kubelet＋kubectl 並重啟 kubelet</strong>。</li>
+  <li>kubeadm 升級嗰陣預設會<strong>自動 renew 憑證</strong>（都可以用 <code>--certificate-renewal=false</code> 閂咗佢）。</li>
+</ul>
+<p>升級工具分三層，唔好撈亂：<code>kubeadm</code> 管「控制平面靜態元件同設定」，<code>kubelet</code> 係每部節點嘅執行者，<code>kubectl</code> 係客戶端——三者版本各自獨立升級。</p>
+
+<h2>2. 節點保養三指令</h2>
+
+<table>
+  <thead>
+    <tr><th>指令</th><th>做咩</th><th>Pod 會點</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>cordon</strong></td>
+      <td>將節點標成唔收得新嘢（SchedulingDisabled）</td>
+      <td>唔再排新 Pod；跑緊嘅<strong>唔郁</strong></td>
+    </tr>
+    <tr>
+      <td><strong>drain</strong></td>
+      <td>cordon + 將上面啲 Pod 趕走（evict）去別嘅節點</td>
+      <td>趕得走嘅 Pod 被安全搬屋；DaemonSet 例外</td>
+    </tr>
+    <tr>
+      <td><strong>uncordon</strong></td>
+      <td>解返個標記，等節點恢復收 Pod</td>
+      <td>之後新 Pod 又排得入嚟</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="hk-callout">
+  <strong>🏨 港式比喻：酒店翻新唔趕客</strong><br>
+  成間酒店 <strong>Full House 爆滿</strong>都要逐層翻新：<strong>drain＝幫客人搬房</strong>（Pod 由 Worker-A 搬去隔籬房，間吉房先開工升級）；
+  cordon 只係門口掛「暫停入住」，房入面啲客唔郁；DaemonSet 好似<strong>駐場保安——唔搬</strong>（--ignore-daemonsets 就係話「保安留低」）；
+  整完 uncordon 拆牌，重新接客。
+</div>
+
+<div class="diagram-card">
+  <h3>⬆️ 升級時間線：Worker-A 搬房＋CP 四步圈</h3>
+  <svg class="svg-diagram" viewBox="0 0 820 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="升級時間線">
+    <!-- CP box with 4 numbered circles -->
+    <g transform="translate(10,10)">
+      <rect width="800" height="110" rx="8" fill="#f0f7ff" stroke="#0969da" stroke-width="2"/>
+      <text x="14" y="24" font-size="13" font-weight="bold" fill="#0969da">Control-plane 先升（1.34 → 1.35）</text>
+      <g transform="translate(14,36)">
+        <circle cx="18" cy="18" r="16" fill="#0969da"/>
+        <text x="18" y="23" font-size="13" text-anchor="middle" fill="#fff" font-weight="bold">1</text>
+        <text x="42" y="15" font-size="11" fill="#333">apt 換 kubeadm</text>
+        <text x="42" y="30" font-size="11" fill="#666">unhold→install 1.35</text>
+      </g>
+      <g transform="translate(220,36)">
+        <circle cx="18" cy="18" r="16" fill="#0969da"/>
+        <text x="18" y="23" font-size="13" text-anchor="middle" fill="#fff" font-weight="bold">2</text>
+        <text x="42" y="15" font-size="11" fill="#333">kubeadm plan</text>
+        <text x="42" y="30" font-size="11" fill="#666">睇路徑先郁手</text>
+      </g>
+      <g transform="translate(410,36)">
+        <circle cx="18" cy="18" r="16" fill="#0969da"/>
+        <text x="18" y="23" font-size="13" text-anchor="middle" fill="#fff" font-weight="bold">3</text>
+        <text x="42" y="15" font-size="11" fill="#333">upgrade apply</text>
+        <text x="42" y="30" font-size="11" fill="#666">cp 專用：換 manifests</text>
+      </g>
+      <g transform="translate(600,36)">
+        <circle cx="18" cy="18" r="16" fill="#0969da"/>
+        <text x="18" y="23" font-size="13" text-anchor="middle" fill="#fff" font-weight="bold">4</text>
+        <text x="42" y="15" font-size="11" fill="#333">換 kubelet＋重啟</text>
+        <text x="42" y="30" font-size="11" fill="#666">restart＋hold 返</text>
+      </g>
+      <path d="M 200 54 L 220 54" stroke="#0969da" stroke-width="3"/>
+      <polygon points="220,54 212,49 212,59" fill="#0969da"/>
+      <path d="M 390 54 L 410 54" stroke="#0969da" stroke-width="3"/>
+      <polygon points="410,54 402,49 402,59" fill="#0969da"/>
+      <path d="M 590 54 L 600 54" stroke="#0969da" stroke-width="3"/>
+      <polygon points="600,54 592,49 592,59" fill="#0969da"/>
+    </g>
+    <!-- Worker-A timeline -->
+    <g transform="translate(10,135)">
+      <rect width="800" height="220" rx="8" fill="#ffffff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="14" y="24" font-size="13" font-weight="bold" fill="#1a7f37">Worker-A 時間線：3 粒 Pod 搬屋記</text>
+      <!-- stage 1: full -->
+      <g transform="translate(14,36)">
+        <rect width="170" height="120" rx="6" fill="#ddf4ff" stroke="#0969da" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#0969da">t0 Full House</text>
+        <text x="10" y="40" font-size="11" fill="#333">⦿ pod-1 🟢</text>
+        <text x="10" y="58" font-size="11" fill="#333">⦿ pod-2 🟢</text>
+        <text x="10" y="76" font-size="11" fill="#333">⦿ pod-3 🟢</text>
+        <text x="10" y="96" font-size="11" fill="#666">🛡️ 保安留低</text>
+        <rect x="10" y="102" width="120" height="14" rx="7" fill="#1a7f37"/>
+        <text x="70" y="112" font-size="9" text-anchor="middle" fill="#fff">Ready</text>
+      </g>
+      <!-- stage 2: drain float -->
+      <g transform="translate(214,36)">
+        <rect width="200" height="120" rx="6" fill="#fff8c5" stroke="#bf8700" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#7d4e00">t1 drain 搬房 ☁️</text>
+        <text x="10" y="40" font-size="11" fill="#333">pod-1 → worker-B ↗</text>
+        <text x="10" y="58" font-size="11" fill="#333">pod-2 → worker-C →</text>
+        <text x="10" y="76" font-size="11" fill="#333">pod-3 → worker-B ↗</text>
+        <text x="10" y="94" font-size="11" fill="#7d4e00">保安唔搬 ⛔</text>
+        <rect x="10" y="102" width="150" height="14" rx="7" fill="#bf8700"/>
+        <text x="85" y="112" font-size="9" text-anchor="middle" fill="#fff">SchedulingDisabled</text>
+      </g>
+      <!-- stage 3: empty upgrade -->
+      <g transform="translate(444,36)">
+        <rect width="150" height="120" rx="6" fill="#f8fafc" stroke="#595f69" stroke-width="2" stroke-dasharray="6,4"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#333">t2 吉房開工</text>
+        <text x="10" y="40" font-size="11" fill="#999">（房吉咗）</text>
+        <text x="10" y="58" font-size="11" fill="#333">upgrade node</text>
+        <text x="10" y="76" font-size="11" fill="#333">換 kubelet＋重啟</text>
+        <text x="10" y="94" font-size="11" fill="#666">1.34 → 1.35</text>
+        <rect x="10" y="102" width="130" height="14" rx="7" fill="#6e7781"/>
+        <text x="75" y="112" font-size="9" text-anchor="middle" fill="#fff">升級中…</text>
+      </g>
+      <!-- stage 4: uncordon -->
+      <g transform="translate(624,36)">
+        <rect width="150" height="120" rx="6" fill="#dafbe1" stroke="#1a7f37" stroke-width="2"/>
+        <text x="10" y="20" font-size="11" font-weight="bold" fill="#1a7f37">t3 拆牌接客</text>
+        <text x="10" y="40" font-size="11" fill="#333">uncordon ✔</text>
+        <text x="10" y="58" font-size="11" fill="#333">又收得新 Pod</text>
+        <text x="10" y="76" font-size="11" fill="#333">post-upgrade 3 粒</text>
+        <rect x="10" y="102" width="120" height="14" rx="7" fill="#1a7f37"/>
+        <text x="70" y="112" font-size="9" text-anchor="middle" fill="#fff">Ready</text>
+      </g>
+      <!-- flow arrows -->
+      <path d="M 184 96 L 214 96" stroke="#bf8700" stroke-width="3"/>
+      <polygon points="214,96 206,91 206,101" fill="#bf8700"/>
+      <text x="186" y="88" font-size="10" fill="#7d4e00">drain</text>
+      <path d="M 414 96 L 444 96" stroke="#595f69" stroke-width="3"/>
+      <polygon points="444,96 436,91 436,101" fill="#595f69"/>
+      <path d="M 594 96 L 624 96" stroke="#1a7f37" stroke-width="3"/>
+      <polygon points="624,96 616,91 616,101" fill="#1a7f37"/>
+      <text x="596" y="88" font-size="10" fill="#1a7f37">uncordon</text>
+      <!-- status badge strip -->
+      <text x="14" y="180" font-size="11" font-weight="bold" fill="#333">狀態徽章：Ready（綠） → SchedulingDisabled（黃：唔收新客） → Ready（綠：復工）</text>
+    </g>
+    <g transform="translate(10,370)">
+      <rect width="800" height="70" rx="6" fill="#fff8c5" stroke="#bf8700" stroke-width="1.5"/>
+      <text x="14" y="24" font-size="12" font-weight="bold" fill="#7d4e00">口訣：cp 先 node 後、一次一小版；每部內 kubeadm → apply／node → kubelet</text>
+      <text x="14" y="44" font-size="11" fill="#595f69">apply＝control-plane 專用（換 static manifests）；node＝worker 專用（更新 kubelet 設定）——唔好調轉！</text>
+      <text x="14" y="60" font-size="11" fill="#595f69">drain 必加 --ignore-daemonsets；cordon 唔搬屋、drain 搬屋、uncordon 復工</text>
+    </g>
+  </svg>
+  <p>個次序就係咁：<strong>control-plane 升完，先到 worker 落場</strong>。調轉嚟做，考官即刻畀你零分。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">apt 升級 checklist（跟住剔，唔會漏）</div>
+  <pre>☐ 1. unhold 解鎖：sudo apt-mark unhold kubeadm kubelet kubectl
+☐ 2. madison 抄版：apt-cache madison kubeadm | head（copy 1.35.x-1.1 全串，唔好自己估）
+☐ 3. install kubeadm：sudo apt-get install -y kubeadm=1.35.x-1.1
+☐ 4. plan 睇路徑：sudo kubeadm upgrade plan
+☐ 5a. CP 專用 apply：sudo kubeadm upgrade apply v1.35.x
+☐ 5b. Worker 專用 node：sudo kubeadm upgrade node（唔係 apply！）
+☐ 6. kubelet＋重啟：install kubelet/kubectl → daemon-reload → restart kubelet
+☐ 7. hold 返鎖住：sudo apt-mark hold kubeadm kubelet kubectl
+記：apply 換「控制平面爐頭」（static manifests），node 只更新「工人設定檔」——worker 跑 apply 會出事！</pre>
+</div>
+
+<h2>3. 實作 A：升級 control plane</h2>
+
+<div class="terminal box">
+  <div class="box-title">喺 control-plane 上：先將 kubeadm 換去目標版本</div>
+  <pre><span class="comment"># 1. Ubuntu 套件管理：kubeadm/kubelet/kubectl 通常被 apt-mark hold 鎖住，先解鎖</span>
+<span class="prompt">sudo apt-mark unhold kubeadm kubelet kubectl</span>
+
+<span class="comment"># 2. 查倉庫有咩可用版本（記低 1.35.x 嘅正確 x，下面帶入）</span>
+<span class="prompt">apt-cache madison kubeadm | head -n 10</span>
+
+<span class="comment"># 3. 升級 kubeadm（將 1.35.x 換成你查到嘅版號）</span>
+<span class="prompt">sudo apt-get update</span>
+<span class="prompt">sudo apt-get install -y kubeadm=1.35.x-1.1</span>
+<span class="prompt">kubeadm version</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">升級前檢查 + 套用</div>
+  <pre><span class="comment"># 4. upgrade plan：列出可升級路徑同版本差異（先睇再郁手）</span>
+<span class="prompt">sudo kubeadm upgrade plan</span>
+
+<span class="comment"># 5. 喺「第一部」control-plane 套用升級（只喺一部 cp 跑 apply）</span>
+<span class="prompt">sudo kubeadm upgrade apply v1.35.x</span>
+<span class="comment">#    佢會逐個更新 kube-apiserver／controller-manager／scheduler 嘅 static manifest，
+#    完成嗰陣印出 "Upgrade complete!"</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">升級 kubelet 同 kubectl，重啟 kubelet</div>
+  <pre><span class="comment"># 6. kubeadm 只管控制平面 manifest；節點上嘅 kubelet 要自己換</span>
+<span class="prompt">sudo apt-get install -y kubelet=1.35.x-1.1 kubectl=1.35.x-1.1</span>
+<span class="prompt">sudo systemctl daemon-reload</span>
+<span class="prompt">sudo systemctl restart kubelet</span>
+
+<span class="comment"># 7. 將版本鎖返（費事下次 apt 自動郁佢）</span>
+<span class="prompt">sudo apt-mark hold kubeadm kubelet kubectl</span>
+
+<span class="comment"># 8. 驗收：control-plane 節點 VERSION 顯示 1.35.x</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="warn box">
+  <div class="box-title">唔熟嘅坑：apt 版號要帶後綴</div>
+  <p>Debian/Ubuntu 嘅套件版號係 <code>1.35.x-1.1</code>（後面多段 Debian revision）。<code>apt-cache madison kubeadm</code> 印出嚟嗰串就係正確寫法——直接 copy &amp; paste，唔好自己估。一次只升一個小版，亦唔好將 <code>upgrade apply</code> 嘅目標寫成「最新」——考試題目會指明精確版號。</p>
+</div>
+
+<h2>4. 實作 B：worker 升級（drain → 升 → uncordon）</h2>
+
+<div class="terminal box">
+  <div class="box-title">喺 control-plane 上：先叫 worker 交出啲 Pod</div>
+  <pre><span class="comment"># 9. drain：cordon（唔再排新嘅）+ 將舊有 Pod 安全趕走
+#    &lt;worker-node&gt; = 你部 worker 節點名（先 get nodes 確認，Killercoda 成日叫 node01）
+#    --ignore-daemonsets：DaemonSet 嘅 Pod 唔趕（佢哋本來就唔應該被搬走）</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl drain &lt;worker-node&gt; --ignore-daemonsets</span>
+<span class="comment">#    輸出列出被 evict 嘅 Pod；完嗰陣節點標成 Ready,SchedulingDisabled</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">喺 worker 上：升 kubeadm → node → kubelet</div>
+  <pre><span class="comment"># 10. worker 端嘅 kubeadm 升級（唔使 upgrade apply——嗰個係 cp 嘅事）</span>
+<span class="prompt">sudo apt-mark unhold kubeadm kubelet kubectl</span>
+<span class="prompt">sudo apt-get update</span>
+<span class="prompt">sudo apt-get install -y kubeadm=1.35.x-1.1</span>
+
+<span class="comment"># 11. kubeadm upgrade node：更新 worker 上嘅 kubelet 設定</span>
+<span class="prompt">sudo kubeadm upgrade node</span>
+
+<span class="comment"># 12. 換 kubelet/kubectl 並重啟 kubelet</span>
+<span class="prompt">sudo apt-get install -y kubelet=1.35.x-1.1 kubectl=1.35.x-1.1</span>
+<span class="prompt">sudo systemctl daemon-reload</span>
+<span class="prompt">sudo systemctl restart kubelet</span>
+<span class="prompt">sudo apt-mark hold kubeadm kubelet kubectl</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">返 control-plane：uncordon 放行</div>
+  <pre><span class="comment"># 13. 解除唔收得嘢，等 worker 恢復收 Pod</span>
+<span class="prompt">kubectl uncordon &lt;worker-node&gt;</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="comment">#    兩部都顯示 1.35.x，worker 嘅 STATUS 唔再有 SchedulingDisabled</span>
+
+<span class="comment"># 14. 驗收：佈 3 粒 Pod 確認 worker 又接到嘢做</span>
+<span class="prompt">kubectl create deployment post-upgrade --image=nginx:1.25 --replicas=3</span>
+<span class="prompt">kubectl get pods -o wide</span>
+<span class="prompt">kubectl delete deployment post-upgrade</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 9–13 步係節點保養嘅完整節奏：<strong>drain 將 Pod 安全搬走（cordon 只係「唔再排新嘅」）→ 喺吉咗嘅節點上升級 → uncordon 等佢重新開工。</strong>升級 worker 期間你啲 service 冇斷線——因為 Pod 一早喺別嘅節點繼續跑。呢個就係 drain 存在嘅意義。</p>
+</div>
+
+<h2>5. 實作 C：憑證檢查同 kubeconfig</h2>
+
+<div class="terminal box">
+  <div class="box-title">憑證到期檢查</div>
+  <pre><span class="comment"># 15. kubeadm 簽嘅憑證有時效；check 下仲剩幾耐到期</span>
+<span class="prompt">sudo kubeadm certs check-expiration</span>
+<span class="comment">#    表格列出各憑證嘅 RESIDUAL TIME（例如 apiserver 一年、admin.conf 一年）</span>
+
+<span class="comment"># 16. 快到期就手動續約（kubeadm 都會喺 upgrade 嗰陣自動 renew）</span>
+<span class="prompt">sudo kubeadm certs renew all</span>
+<span class="prompt">sudo kubeadm certs check-expiration</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">kubeconfig 嘅角色分工</div>
+  <pre><span class="comment"># 17. /etc/kubernetes 下面嘅 kubeconfig 各自代表一個角色</span>
+<span class="prompt">ls /etc/kubernetes/*.conf</span>
+<span class="prompt">kubectl config view</span>
+<span class="comment">#    admin.conf   → 叢集管理員（kubectl 用嗰份）
+#    controller-manager.conf → controller-manager 用自己身份連 apiserver
+#    scheduler.conf          → scheduler 嘅身份
+#    kubelet.conf            → 每部節點 kubelet 嘅身份</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾（Killercoda VM 直接閂咗就得）</div>
+  <pre><span class="comment"># 18. 本課喺拋棄式 VM 進行——練完直接閂場景，本機叢集唔受影響</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 升級口訣：<strong>cp 先 node 後、一次一小版；每部內「kubeadm → apply/node → kubelet」。</strong> ② 指令五連：<code>apt install kubeadm=版本</code> → <code>kubeadm upgrade plan</code> → <code>kubeadm upgrade apply vX.Y.Z</code>（cp）／<code>kubeadm upgrade node</code>（worker）→ <code>apt install kubelet=版本 kubectl=版本</code> → <code>systemctl restart kubelet</code>。③ drain 必帶 <code>--ignore-daemonsets</code>；卡住嗰陣睇 error 訊息決定加唔加 <code>--delete-emptydir-data</code> 或 <code>--force</code>（題目有 emptyDir Pod 嗰陣）。④ cordon 唔搬屋、drain 搬屋、uncordon 復工。⑤ 憑證：<code>kubeadm certs check-expiration</code>／<code>renew all</code>；upgrade 預設自動 renew。⑥ kubeconfig：admin.conf 係管理員嗰把，<code>/etc/kubernetes/*.conf</code> 各角色一把。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你用 kubeadm upgrade plan/apply 將 control plane 升咗一個小版，仲升級埋 kubelet/kubectl。</li>
+  <li>你用 drain → 升級 → uncordon 完成 worker 嘅無痛升級。</li>
+  <li>你識分 cordon／drain／uncordon 嘅差別同旗標。</li>
+  <li>你 check 咗憑證到期時間，識認 /etc/kubernetes 各 kubeconfig 嘅角色。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">升級嗰陣應該先升邊邊？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">worker 節點先</button>
+    <button class="quiz-opt">control plane</button>
+    <button class="quiz-opt">邊邊都得㗎</button>
+    <button class="quiz-opt">CNI 插件先行</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">cordon 同 drain 嘅差別係？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">cordon 唔趕走 Pod</button>
+    <button class="quiz-opt">兩者完全一樣</button>
+    <button class="quiz-opt">drain 唔擋新 Pod</button>
+    <button class="quiz-opt">cordon 刪除節點</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">drain 嗰陣唔想趕走 DaemonSet 嘅 Pod 要加咩旗？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">加上 --force 旗</button>
+    <button class="quiz-opt">--delete-emptydir-data</button>
+    <button class="quiz-opt">--ignore-daemonsets</button>
+    <button class="quiz-opt">--grace-period 旗</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>叢集識起、識升、識整。下一課返本機（Calico 叢集由 0012 之後一直冇郁過），將「發佈 workload」嘅架生補齊：<a href="../reference/glossary.html">Helm</a>（打包好嘅 chart）、<a href="../reference/glossary.html">Kustomize</a>（宣告式疊加）、<a href="../reference/glossary.html">CRD</a> 同 <a href="../reference/glossary.html">Operator</a>，順便收埋 CNI/CSI/CRI 三介面。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/">Upgrading kubeadm clusters（官方文件）</a> —— 本課嘅權威版，照住「Upgrading control plane nodes」同「Upgrading worker nodes」兩節做一次，約 20 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0015-kubeadm-cluster-setup.html">← 上一課：kubeadm 起叢集</a>
+  <a href="0017-helm-kustomize-crd-operator.html">下一課：Helm 同 CRD ➔</a>
+</div>
+</div>
+</body>
+</html>

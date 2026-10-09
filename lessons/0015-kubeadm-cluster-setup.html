@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0015 — kubeadm 起叢集（Killercoda 實戰）</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 4 · 對應考綱：<a href="../reference/cka-domain-map.html">Cluster Architecture, Installation &amp; Configuration（25%）</a> · 需時約 40 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第十五課 · 親手起廠</span>
+  <h1>Lesson 0015：kubeadm 起叢集（Killercoda 實戰）</h1>
+  <p><strong>目標：</strong>用 <code>kubeadm</code> 喺兩部 VM 上由零 init／join，將 0001 嗰張控制平面元件圖變成你親手裝出嚟嘅嘢：preflight、憑證、static pod、CNI，步步睇得見！</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  到 0014 為止，啲叢集全部係 kind「生」出嚟，你冇親手起過廠。CKA 要你識起、識 join、識裝 CNI——呢課喺 Killercoda 拋棄式 VM 度玩，整爛咗重建就得，本機 Calico 叢集完全唔受影響，夠貼地！
+</div>
+
+<div class="warn box">
+  <div class="box-title">本課同 0016 都喺 Killercoda 進行</div>
+  <p>開 <a href="https://killercoda.com/">killercoda.com</a>（免費瀏覽器練習場），揀個「kubeadm／Kubernetes cluster setup、含 control-plane＋worker 兩部 VM、Ubuntu 且已裝好 kubeadm/kubelet/kubectl」嘅場景。如果嗰場冇預裝 kubeadm，先照官方 Install kubeadm 頁裝：containerd／kubeadm／kubelet／kubectl 三步。玩完直接閂咗重建，本機叢集唔郁。</p>
+</div>
+
+<h2>1. 睇下先：kubeadm init 背後做緊咩</h2>
+<p>記住呢條流程，考場填空啱晒用：</p>
+<ul>
+  <li><strong>preflight</strong>：check root、CPU/記憶體、hostname、port 有冇被霸住。</li>
+  <li><strong>整憑證同 kubeconfig</strong>：CA 同各元件憑證（apiserver/controller-manager/scheduler/etcd/admin…）擺 <code>/etc/kubernetes/pki</code>；kubeconfig 擺 <code>/etc/kubernetes</code>。</li>
+  <li><strong>寫低控制平面 static pod manifest</strong>：<code>/etc/kubernetes/manifests/</code> 下面出返 kube-apiserver.yaml、kube-controller-manager.yaml、kube-scheduler.yaml、etcd.yaml——kubelet 一見到就拉起佢哋（0014 嘅 etcd 就係咁樣活嘅）。</li>
+  <li><strong>派 bootstrap token</strong>：印出 join 指令，畀 worker 帶住 token 加入。</li>
+  <li><strong>等 CNI</strong>：未裝網路之前節點係 NotReady、coredns 卡住 Pending（0012 見過一模一樣嘅症狀）。</li>
+</ul>
+<p><code>kubeadm join</code> 就係 worker 端嘅鏡像流程：拎 token 同 apiserver 握手、問返張自己嘅憑證、kubelet 註冊上叢集。</p>
+
+<h2>2. HA 拓撲：兩種 etcd 擺法</h2>
+
+<table>
+  <thead>
+    <tr><th></th><th>Stacked etcd（疊放）</th><th>External etcd（外置）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>etcd 擺邊</strong></td>
+      <td>同 control plane 同部機（每部 cp 各一份）</td>
+      <td>獨立嘅 etcd 主機群</td>
+    </tr>
+    <tr>
+      <td><strong>機器需求</strong></td>
+      <td>少（cp 幾部就有幾份 etcd）</td>
+      <td>多（cp + 獨立 etcd 群）</td>
+    </tr>
+    <tr>
+      <td><strong>啱用</strong></td>
+      <td>考試、中小叢集、實驗</td>
+      <td>生產、etcd 同 cp 要分開保養</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="hk-callout">
+  <strong>🏭 港式比喻：起廠收樓一條龍</strong><br>
+  preflight＝<strong>收樓驗樓</strong>（水電煤、門鎖得唔得）；整 certs＋pki＝<strong>鎖匙房</strong>（每道門一把鎖匙）；
+  寫 manifests 起 static pod＝<strong>大廚返工</strong>（apiserver／scheduler／etcd 開爐）；admin.conf 拷去 ~/.kube＝<strong>收大門鎖匙</strong>；
+  裝 CNI＝<strong>拉電話線</strong>（唔拉就對外失聯）；join 指令＝<strong>QR code 邀請</strong>（worker 嘟一嘟入廠）。
+</div>
+
+<div class="diagram-card">
+  <h3>🏗️ kubeadm 起廠流程圖：泳道時間線（由上而下落廠）</h3>
+  <svg class="svg-diagram" viewBox="0 0 820 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="kubeadm 泳道時間線">
+    <!-- lane headers -->
+    <g transform="translate(180,10)">
+      <rect width="290" height="34" rx="6" fill="#f0f7ff" stroke="#0969da" stroke-width="2"/>
+      <text x="80" y="22" font-size="13" font-weight="bold" fill="#0969da">🖥️ Control-plane 泳道</text>
+    </g>
+    <g transform="translate(500,10)">
+      <rect width="290" height="34" rx="6" fill="#f6fbf7" stroke="#1a7f37" stroke-width="2"/>
+      <text x="95" y="22" font-size="13" font-weight="bold" fill="#1a7f37">👷 Worker 泳道</text>
+    </g>
+    <!-- vertical spine -->
+    <line x1="325" y1="50" x2="325" y2="560" stroke="#0969da" stroke-width="3" stroke-dasharray="8,5"/>
+    <line x1="645" y1="50" x2="645" y2="560" stroke="#1a7f37" stroke-width="3" stroke-dasharray="8,5"/>
+    <!-- step 1 preflight -->
+    <g transform="translate(200,55)">
+      <rect width="250" height="62" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="22" font-size="12" font-weight="bold" fill="#0969da">① preflight 驗樓</text>
+      <text x="12" y="42" font-size="11" fill="#333">root／CPU／hostname／port</text>
+      <text x="12" y="56" font-size="11" fill="#666">[ERROR] 卡邊度就整邊度</text>
+    </g>
+    <!-- step 2 certs -->
+    <g transform="translate(200,127)">
+      <rect width="250" height="62" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="22" font-size="12" font-weight="bold" fill="#0969da">② 整 certs 鎖匙房</text>
+      <text x="12" y="42" font-size="11" fill="#333">/etc/kubernetes/pki/*</text>
+      <text x="12" y="56" font-size="11" fill="#666">CA＋apiserver＋etcd 憑證</text>
+    </g>
+    <!-- step 3 manifests -->
+    <g transform="translate(200,199)">
+      <rect width="250" height="72" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="22" font-size="12" font-weight="bold" fill="#0969da">③ 寫 manifests 大廚返工</text>
+      <text x="12" y="42" font-size="11" fill="#333">/etc/kubernetes/manifests/*.yaml</text>
+      <text x="12" y="58" font-size="11" fill="#666">kubelet 見檔即拉 static pod</text>
+    </g>
+    <!-- step 4 admin.conf -->
+    <g transform="translate(200,281)">
+      <rect width="250" height="62" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="22" font-size="12" font-weight="bold" fill="#0969da">④ 派大門鎖匙</text>
+      <text x="12" y="42" font-size="11" fill="#333">cp admin.conf → ~/.kube/config</text>
+      <text x="12" y="56" font-size="11" fill="#666">kubectl 先認得叢集</text>
+    </g>
+    <!-- step 5 CNI -->
+    <g transform="translate(200,353)">
+      <rect width="250" height="72" rx="6" fill="#ffffff" stroke="#bf8700" stroke-width="2"/>
+      <text x="12" y="22" font-size="12" font-weight="bold" fill="#7d4e00">⑤ 拉電話線：裝 CNI</text>
+      <text x="12" y="42" font-size="11" fill="#333">kubectl create -f calico…</text>
+      <text x="12" y="58" font-size="11" fill="#666">未裝＝全廠失聯（見紅盒）</text>
+    </g>
+    <!-- red symptom callout -->
+    <g transform="translate(30,353)">
+      <rect width="160" height="72" rx="6" fill="#ffebe9" stroke="#cf222e" stroke-width="2"/>
+      <text x="10" y="20" font-size="11" font-weight="bold" fill="#cf222e">⚠️ 未裝 CNI 症狀</text>
+      <text x="10" y="38" font-size="11" fill="#cf222e">node NotReady</text>
+      <text x="10" y="54" font-size="11" fill="#cf222e">coredns Pending</text>
+    </g>
+    <path d="M 190 389 L 200 389" stroke="#cf222e" stroke-width="2" stroke-dasharray="4,3"/>
+    <!-- step 6 Ready -->
+    <g transform="translate(200,435)">
+      <rect width="250" height="52" rx="6" fill="#ddf4ff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="22" font-size="12" font-weight="bold" fill="#0969da">⑥ Ready 開業</text>
+      <text x="12" y="40" font-size="11" fill="#333">get nodes Ready／pods Running</text>
+    </g>
+    <!-- step 7 join -->
+    <g transform="translate(520,435)">
+      <rect width="250" height="80" rx="6" fill="#ffffff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="12" y="22" font-size="12" font-weight="bold" fill="#1a7f37">⑦ Worker 嘟 QR code</text>
+      <text x="12" y="42" font-size="11" fill="#333">kubeadm join … token＋hash</text>
+      <text x="12" y="58" font-size="11" fill="#666">握手→攞證→kubelet 註冊</text>
+      <text x="12" y="72" font-size="11" fill="#666">token 過期要重印</text>
+    </g>
+    <path d="M 450 461 L 520 461" stroke="#0969da" stroke-width="3"/>
+    <polygon points="520,461 510,456 510,466" fill="#0969da"/>
+    <text x="452" y="451" font-size="11" fill="#0969da">join token</text>
+    <!-- optional LB -->
+    <g transform="translate(520,525)">
+      <rect width="250" height="62" rx="6" fill="none" stroke="#8250df" stroke-width="2" stroke-dasharray="6,4"/>
+      <text x="12" y="22" font-size="12" font-weight="bold" fill="#8250df">⧉ 選用：多 CP 加 LB</text>
+      <text x="12" y="42" font-size="11" fill="#333">--control-plane-endpoint LB:6443</text>
+      <text x="12" y="56" font-size="11" fill="#666">＋ --upload-certs／--control-plane</text>
+    </g>
+    <g transform="translate(200,525)">
+      <rect width="250" height="62" rx="6" fill="#f8fafc" stroke="#595f69" stroke-width="1.5"/>
+      <text x="12" y="22" font-size="12" font-weight="bold" fill="#333">🗂️ 路徑三寶</text>
+      <text x="12" y="42" font-size="11" fill="#333">pki／*.conf／manifests</text>
+      <text x="12" y="56" font-size="11" fill="#666">鎖匙房／身份證／廚房爐頭</text>
+    </g>
+  </svg>
+  <p>成個起廠得三步：<strong>config、CNI、join</strong>。邊步瀨嘢，對返個位就搵到原因。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">路徑三寶＋網段門牌（考場默寫）</div>
+  <pre>鎖匙房：/etc/kubernetes/pki/            ← CA＋各元件憑證
+身份證：/etc/kubernetes/*.conf          ← admin.conf（大門鎖匙）／kubelet.conf／scheduler.conf…
+廚房爐頭：/etc/kubernetes/manifests/     ← kube-apiserver.yaml／etcd.yaml…（kubelet 見檔開火）
+門牌號段：--pod-network-cidr=192.168.0.0/16  ← 成條邨嘅門牌號段，Calico 派 Pod IP 靠佢；
+         init 嗰陣唔畀＝之後冇網段可派，裝 CNI 都救唔返，要 reset 重嚟</pre>
+</div>
+
+<h2>3. 實作 A：kubeadm init + CNI</h2>
+
+<div class="terminal box">
+  <div class="box-title">喺 control-plane VM 上 init</div>
+  <pre><span class="comment"># 1. 先確認三件套就位（Killercoda 場景通常已裝好）</span>
+<span class="prompt">kubeadm version</span>
+<span class="prompt">kubelet --version</span>
+<span class="prompt">kubectl version --client</span>
+
+<span class="comment"># 2. init：--pod-network-cidr 畀 Calico 用嘅網段（同 0012 對齊 192.168.0.0/16）</span>
+<span class="prompt">sudo kubeadm init --pod-network-cidr=192.168.0.0/16</span>
+<span class="comment">#    成功後會印一大段：kubeconfig 設定步驟、join 指令、token</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">設定 kubectl（root 嘅 admin.conf 拷畀而家個 user）</div>
+  <pre><span class="comment"># 3. kubeadm 將「管理員 kubeconfig」擺喺 /etc/kubernetes/admin.conf
+#    拷去 $HOME/.kube/config 之後 kubectl 先認得叢集</span>
+<span class="prompt">mkdir -p $HOME/.kube</span>
+<span class="prompt">sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config</span>
+<span class="prompt">sudo chown $(id -u):$(id -g) $HOME/.kube/config</span>
+
+<span class="comment"># 4. 睇成果：control-plane 已 Ready，但 worker 未 join、網路未裝</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pods -n kube-system</span>
+<span class="comment">#    coredns 卡 Pending、節點可能 NotReady——都係「未裝 CNI」嘅症狀</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">裝 CNI（Calico，v3.32.2，0012 同一套）</div>
+  <pre><span class="comment"># 5. Calico operator 同 CRD、安裝設定——三支指令照抄</span>
+<span class="prompt">kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/v1_crd_projectcalico_org.yaml</span>
+<span class="prompt">kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/tigera-operator.yaml</span>
+<span class="prompt">kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.32.2/manifests/custom-resources.yaml</span>
+
+<span class="comment"># 6. 等 calico-system 就緒，節點轉 Ready</span>
+<span class="prompt">kubectl get pods -n calico-system -w</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 4 步到第 6 步係 0001 理論嘅完整重現：<strong>init 只裝控制平面，唔包網路</strong>；節點 NotReady、coredns Pending，直到 CNI 上線先全部轉好。親手起過一次，Troubleshooting 見到「NotReady + Pending」就會即刻諗起「先查 CNI」。</p>
+</div>
+
+<h2>4. 實作 B：worker join + 驗收</h2>
+
+<div class="terminal box">
+  <div class="box-title">喺 control-plane 上拎 join 指令</div>
+  <pre><span class="comment"># 7. token 有時效（預設 24h）；過期就重新產生並直接印出完整 join 指令
+#    （呢支指令要讀 root 嘅 admin.conf，非 root 記得加 sudo）</span>
+<span class="prompt">sudo kubeadm token create --print-join-command</span>
+<span class="comment">#    輸出似：
+#    kubeadm join 192.168.x.x:6443 --token xxxxxx.xxxxxxxxxxxxxxxx \
+#        --discovery-token-ca-cert-hash sha256:xxxxxxxxxxxxxxxx</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">喺 worker VM 上執行 join</div>
+  <pre><span class="comment"># 8. 將上一支指令嘅輸出（成段 kubeadm join ...）貼去 worker VM 執行</span>
+<span class="prompt">sudo kubeadm join 192.168.x.x:6443 --token xxxxxx.xxxxxxxxxxxxxxxx --discovery-token-ca-cert-hash sha256:xxxxxxxxxxxxxxxx</span>
+<span class="comment">#    成功會印 "This node has joined the cluster"</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">返 control-plane 驗收</div>
+  <pre><span class="comment"># 9. worker 出現喺節點清單、狀態 Ready</span>
+<span class="prompt">kubectl get nodes</span>
+<span class="prompt">kubectl get pods -A -o wide</span>
+<span class="comment">#    calico-node 喺每部節點各一粒（0004 嘅 DaemonSet 現場）</span>
+
+<span class="comment"># 10. 驗收：佈支 Deployment 跨節點跑，再刪走</span>
+<span class="prompt">kubectl create deployment demo --image=nginx:1.25 --replicas=3</span>
+<span class="prompt">kubectl get pods -o wide</span>
+<span class="prompt">kubectl delete deployment demo</span></pre>
+</div>
+
+<h2>5. 實作 C：加第二個 control plane（走查）</h2>
+<p>HA 控制平面要至少兩部 control-plane 同一個 load balancer（將 apiserver 流量分畀兩部 cp）。本課 Killercoda 場景通常得 2 部 VM，所以呢段係「走查」——睇明流程就得，唔使實跑：</p>
+<div class="terminal box">
+  <div class="box-title">多 cp 嘅 join 流程（概念走查）</div>
+  <pre><span class="comment"># 喺第一部 cp init 嗰陣加 --control-plane-endpoint 指去 LB，並 --upload-certs
+# 等憑證可以畀第二部 cp 下載：</span>
+<span class="prompt">sudo kubeadm init --pod-network-cidr=192.168.0.0/16 --control-plane-endpoint=lb.example.com:6443 --upload-certs</span>
+
+<span class="comment"># 第一部 cp 印出嘅輸出入面，除咗 worker 嘅 join 指令，仲有一段「control-plane 專用」：</span>
+<span class="prompt">sudo kubeadm join lb.example.com:6443 --token xxxxxx --discovery-token-ca-cert-hash sha256:xxx --control-plane --certificate-key yyyyy</span>
+
+<span class="comment"># --control-plane 話畀 kubeadm 知：「我係新嘅 control plane，唔係 worker」；
+# --certificate-key 等佢解密第一部 cp 上傳嘅憑證</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① init 後三件事：set kubeconfig（admin.conf → ~/.kube/config）、裝 CNI、join worker——口訣「<strong>config、CNI、join</strong>」。② token 過期：<code>kubeadm token create --print-join-command</code> 一行搞掂。③ 憑證喺 <code>/etc/kubernetes/pki</code>，各 kubeconfig 喺 <code>/etc/kubernetes</code>；admin.conf 係管理員嗰把。④ 控制平面元件 = <code>/etc/kubernetes/manifests/</code> 下面嘅 static pod。⑤ 多 cp：init 加 <code>--control-plane-endpoint</code>（LB）同 <code>--upload-certs</code>，join 加 <code>--control-plane --certificate-key</code>。⑥ 節點 NotReady：九成係 CNI 未裝或者 CNI pod 未起身。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你喺 Killercoda 乾淨 VM 上用 kubeadm init 起出控制平面，講得出 init 背後每步。</li>
+  <li>你 set 好 admin kubeconfig、裝上 Calico CNI，見到節點由 NotReady 轉 Ready。</li>
+  <li>你用 <code>kubeadm token create --print-join-command</code> 等 worker join 咗再驗收。</li>
+  <li>你走查咗第二個 control plane 嘅 join 流程，識分 stacked 同 external etcd 兩種 HA 拓撲。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">kubeadm init 之後，kubectl 要認得叢集需要？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">重新開機一次</button>
+    <button class="quiz-opt">設定 kubeconfig</button>
+    <button class="quiz-opt">安裝 Docker 先</button>
+    <button class="quiz-opt">先去 join 指令</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">token 過期嗰陣，整返新 join 指令嘅方法係？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">kubeadm token create --print-join-command</button>
+    <button class="quiz-opt">kubeadm reset 去重置</button>
+    <button class="quiz-opt">kubeadm init --force</button>
+    <button class="quiz-opt">重新安裝 kubeadm</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">控制平面四個元件以咩形式跑起身？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">DaemonSet 形式</button>
+    <button class="quiz-opt">Deployment 形式</button>
+    <button class="quiz-opt">Static Pod 形式</button>
+    <button class="quiz-opt">CronJob 排程形</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>叢集識起喇，下一課學「大個仔」：<a href="../reference/glossary.html">kubeadm upgrade</a> 升級叢集（一次一小版、cp 先 node 後），加埋節點保養嘅 <a href="../reference/glossary.html">cordon／drain／uncordon</a>——一樣喺 Killercoda 拋棄式 VM 上演練。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/create-cluster-kubeadm/">Creating a cluster with kubeadm（官方文件）</a> —— 本課嘅權威版，加官方 <a href="https://kubernetes.io/docs/reference/setup-tools/kubeadm/">kubeadm reference</a> 嘅 init／join 頁，約 20 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0014-etcd-backup-restore.html">← 上一課：etcd 備份還原</a>
+  <a href="0016-cluster-upgrade-node-maintenance.html">下一課：叢集升級 ➔</a>
+</div>
+</div>
+</body>
+</html>

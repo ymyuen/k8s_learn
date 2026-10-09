@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0018 — 故障排除 I：Pod 同容器層</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 5 · 對應考綱：<a href="../reference/cka-domain-map.html">Troubleshooting（30%）</a> · 需時約 30 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第十八課 · 排錯要快狠準</span>
+  <h1>Lesson 0018：故障排除 I — Pod 同容器層</h1>
+  <p><strong>目標：</strong>Troubleshooting 佔成 30%，係最大份！呢課教你一套系統化流程，搞掂五粒經典壞 Pod——由 ImagePullBackOff 到 OOMKilled，考場見到即刻識得落手。</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  之前學嘅 describe、logs、readiness 全部都係為咗呢一刻！CKA 一半時間都係喺度救 Pod——瀨嘢嗰陣唔係靠撞彩，係靠流程。練熟呢課，考試見到紅色 STATUS 都唔會腳軟，貼地搞掂佢！
+</div>
+
+<h2>1. 除錯流程：由症狀追到根因</h2>
+<p>記住呢個順序，唔好跳 steps，考場搶分就靠佢：</p>
+
+<div class="diagram-card">
+  <h3>🔧 Pod 除錯分支圖：先睇 STATUS，再揀第一招</h3>
+  <svg class="svg-diagram" viewBox="0 0 780 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="由 STATUS 分支到正確第一指令">
+    <g transform="translate(230,12)">
+      <rect width="320" height="72" rx="8" fill="#fff" stroke="#0969da" stroke-width="2.5"/>
+      <text x="20" y="28" font-weight="bold" fill="#0969da" font-size="14">START：kubectl get pod</text>
+      <text x="20" y="50" font-size="12" fill="#333">睇 STATUS 欄——症狀決定第一招</text>
+      <text x="20" y="68" font-size="11" fill="#666">唔好盲衝 describe / logs，先對位！</text>
+    </g>
+    <path d="M 390 84 L 390 104" stroke="#0969da" stroke-width="3"/>
+    <polygon points="390,104 385,96 395,96" fill="#0969da"/>
+    <path d="M 40 104 L 740 104" stroke="#0969da" stroke-width="2.5"/>
+    <g>
+      <path d="M 130 104 L 130 125" stroke="#cf222e" stroke-width="2.5"/><polygon points="130,125 125,118 135,118" fill="#cf222e"/>
+      <path d="M 260 104 L 260 125" stroke="#cf222e" stroke-width="2.5"/><polygon points="260,125 255,118 265,118" fill="#cf222e"/>
+      <path d="M 390 104 L 390 125" stroke="#1a7f37" stroke-width="2.5"/><polygon points="390,125 385,118 395,118" fill="#1a7f37"/>
+      <path d="M 520 104 L 520 125" stroke="#8250df" stroke-width="2.5"/><polygon points="520,125 515,118 525,118" fill="#8250df"/>
+      <path d="M 650 104 L 650 125" stroke="#0969da" stroke-width="2.5"/><polygon points="650,125 645,118 655,118" fill="#0969da"/>
+      <path d="M 390 104 L 390 300" stroke="#666" stroke-width="1.5" stroke-dasharray="5 4" opacity="0.0"/>
+    </g>
+    <g transform="translate(15,125)">
+      <rect width="230" height="150" rx="6" fill="#fff" stroke="#cf222e" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#cf222e" font-size="13">ImagePullBackOff</text>
+      <text x="12" y="46" font-size="11" fill="#333">名 / tag 錯、要 login</text>
+      <text x="12" y="70" font-size="12" fill="#333">➔ 第一招：describe</text>
+      <text x="12" y="90" font-size="12" fill="#333">睇 Events 尾筆</text>
+      <text x="12" y="112" font-size="11" fill="#666">Failed to pull image</text>
+      <text x="12" y="130" font-size="11" fill="#666">manifest unknown</text>
+    </g>
+    <g transform="translate(275,125)">
+      <rect width="230" height="150" rx="6" fill="#fff" stroke="#cf222e" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#cf222e" font-size="13">CreateContainer…Error</text>
+      <text x="12" y="46" font-size="11" fill="#333">env / volume 引用唔存在</text>
+      <text x="12" y="70" font-size="12" fill="#333">➔ 第一招：describe</text>
+      <text x="12" y="90" font-size="12" fill="#333">睇 Events 點名邊個</text>
+      <text x="12" y="112" font-size="11" fill="#666">configmap "app-env"</text>
+      <text x="12" y="130" font-size="11" fill="#666">not found</text>
+    </g>
+    <g transform="translate(535,125)">
+      <rect width="230" height="150" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#1a7f37" font-size="13">CrashLoopBackOff</text>
+      <text x="12" y="46" font-size="11" fill="#333">起身即死，exit 非 0</text>
+      <text x="12" y="70" font-size="12" fill="#333">➔ 第一招：logs</text>
+      <text x="12" y="90" font-size="12" fill="#333">＋ logs --previous</text>
+      <text x="12" y="112" font-size="11" fill="#666">聽 app 自己講遺言</text>
+      <text x="12" y="130" font-size="11" fill="#666">⭐ 唔係 describe 先</text>
+    </g>
+    <g transform="translate(15,290)">
+      <rect width="230" height="135" rx="6" fill="#fff" stroke="#8250df" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#8250df" font-size="13">OOMKilled / 137</text>
+      <text x="12" y="46" font-size="11" fill="#333">爆 memory limit 畀人斬</text>
+      <text x="12" y="70" font-size="12" fill="#333">➔ 第一招：describe</text>
+      <text x="12" y="90" font-size="12" fill="#333">睇 Reason: OOMKilled</text>
+      <text x="12" y="112" font-size="11" fill="#666">137 = 128 + 9 SIGKILL</text>
+    </g>
+    <g transform="translate(275,290)">
+      <rect width="230" height="135" rx="6" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#0969da" font-size="13">Pending 排唔到位</text>
+      <text x="12" y="46" font-size="11" fill="#333">資源唔夠 / taint / 揀錯</text>
+      <text x="12" y="70" font-size="12" fill="#333">➔ 第一招：describe</text>
+      <text x="12" y="90" font-size="12" fill="#333">睇 Events 最尾</text>
+      <text x="12" y="112" font-size="11" fill="#666">Insufficient cpu / memory</text>
+    </g>
+    <g transform="translate(535,290)">
+      <rect width="230" height="135" rx="6" fill="#fff" stroke="#0969da" stroke-width="2"/>
+      <text x="12" y="26" font-weight="bold" fill="#0969da" font-size="13">Running 但 0/1</text>
+      <text x="12" y="46" font-size="11" fill="#333">readiness 探針失敗</text>
+      <text x="12" y="70" font-size="12" fill="#333">➔ 第一招：describe</text>
+      <text x="12" y="90" font-size="12" fill="#333">睇 probe 事件</text>
+      <text x="12" y="112" font-size="11" fill="#666">Readiness probe failed</text>
+    </g>
+    <g transform="translate(15,440)">
+      <rect width="750" height="100" rx="8" fill="#fff8e6" stroke="#9a6700" stroke-width="2"/>
+      <text x="55" y="32" font-weight="bold" fill="#9a6700" font-size="14">🔒 第 5 格：刪咗重套 delete + apply（Pod spec 大部份改唔到，唔好熱修）</text>
+      <text x="55" y="56" font-size="12" fill="#333">kubectl delete pod &lt;名&gt; --wait=false → 改 YAML → kubectl apply -f xxx.yaml → get pod 驗證</text>
+      <text x="55" y="78" font-size="11" fill="#666">🔒 = immutability 鎖住咗——好似出咗爐嘅麵包，唔啱食就掉咗再焗過，唔係返焗同一塊。</text>
+    </g>
+    <circle cx="42" cy="472" r="14" fill="#9a6700"/>
+    <text x="35" y="478" font-size="14" fill="#fff">🔒</text>
+  </svg>
+  <svg class="svg-diagram" viewBox="0 0 780 190" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="previous 日誌兩格圖">
+    <text x="15" y="20" font-weight="bold" fill="#1a7f37" font-size="14">🔍 --previous 係睇邊個？N-1 死咗嗰個 vs N 新生空空嗰個</text>
+    <g transform="translate(15,30)">
+      <rect width="340" height="135" rx="6" fill="#ffebe9" stroke="#cf222e" stroke-width="2" stroke-dasharray="7 4"/>
+      <text x="15" y="30" font-weight="bold" fill="#cf222e" font-size="13">☠️ N-1 上一輪（已死）有料到</text>
+      <text x="15" y="55" font-size="12" fill="#333">kubectl logs crash-demo --previous</text>
+      <text x="15" y="78" font-size="12" fill="#333">印出：starting … 然後 exit 1</text>
+      <text x="15" y="102" font-size="11" fill="#666">死因遺言喺晒呢度，必睇！</text>
+      <text x="15" y="124" font-size="11" fill="#666">RESTARTS 每次 +1 就係佢</text>
+    </g>
+    <g transform="translate(240,95)">
+      <rect width="110" height="34" rx="17" fill="#1a7f37"/>
+      <text x="12" y="22" font-size="12" fill="#fff" font-weight="bold">--previous ➔</text>
+    </g>
+    <g transform="translate(425,30)">
+      <rect width="340" height="135" rx="6" fill="#f6f8fa" stroke="#8c959f" stroke-width="2"/>
+      <text x="15" y="30" font-weight="bold" fill="#57606a" font-size="13">👶 N 今輪（新生）空空如也</text>
+      <text x="15" y="55" font-size="12" fill="#333">kubectl logs crash-demo</text>
+      <text x="15" y="78" font-size="12" fill="#333">可能乜都未印就又死</text>
+      <text x="15" y="102" font-size="11" fill="#666">齋睇呢格會以為「冇 log」</text>
+      <text x="15" y="124" font-size="11" fill="#666">兩格一齊睇先係真相</text>
+    </g>
+  </svg>
+  <p>口訣：<strong>症狀 → 第一步要對位</strong>，下面呢張表背到滾瓜爛熟。修好要過 🔒 嗰關：一律刪咗重套。</p>
+</div>
+
+<table>
+  <thead>
+    <tr><th>症狀（STATUS）</th><th>最可能原因</th><th>第一指令</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>ImagePullBackOff</td><td>映像名稱／tag 錯、登入問題</td><td><code>describe pod</code> 睇 Events</td></tr>
+    <tr><td>CreateContainerConfigError</td><td>env 或 volume 引用唔存在嘅 ConfigMap／Secret</td><td><code>describe pod</code> 睇 Events</td></tr>
+    <tr><td>CrashLoopBackOff</td><td>程式一起身就瓜（exit 非 0）</td><td><code>logs</code>／<code>logs --previous</code></td></tr>
+    <tr><td>OOMKilled</td><td>爆咗 memory limit</td><td><code>describe pod</code> 睇 Reason</td></tr>
+    <tr><td>Running 但 READY 0/1</td><td>readiness 探針失敗</td><td><code>describe pod</code> 睇探針事件</td></tr>
+    <tr><td>Pending</td><td>資源唔夠／taint／nodeSelector 冇位排</td><td><code>describe pod</code> 睇 Events</td></tr>
+  </tbody>
+</table>
+
+<h2>2. 實作 A：五粒壞 Pod 診斷賽</h2>
+<p>逐份 YAML 存檔、套用、診斷、修復。修 Pod 口訣：<strong>搵到根因 → 改 YAML → 刪咗重套</strong>（Pod 開咗之後大部份 spec 改唔到，唔好嘥時間）。第一粒：個 image tag 根本唔存在。</p>
+
+<div class="terminal box">
+  <div class="box-title">pod1-bad-image.yaml — 映像 tag 唔存在</div>
+  <pre><span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: bad-image</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: nginx:9.99</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">診斷 1：映像拉唔到</div>
+  <pre><span class="comment"># 1. 套用後睇 STATUS——先係 ErrImagePull，重試幾次變 ImagePullBackOff</span>
+<span class="prompt">nano pod1-bad-image.yaml</span>
+<span class="prompt">kubectl apply -f pod1-bad-image.yaml</span>
+<span class="prompt">kubectl get pod bad-image</span>
+
+<span class="comment"># 2. describe 搵根因：Events 嘅 Failed to pull image 會寫出真相</span>
+<span class="prompt">kubectl describe pod bad-image</span>
+
+<span class="comment"># 3. 修復：tag 改返存在嘅版本，刪咗重套</span>
+<span class="prompt">nano pod1-bad-image.yaml</span>
+<span class="prompt">kubectl delete pod bad-image --wait=false</span>
+<span class="prompt">kubectl apply -f pod1-bad-image.yaml</span>
+<span class="prompt">kubectl get pod bad-image</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>ImagePullBackOff 嘅根因幾乎全部寫喺 <code>describe</code> 嘅 Events 最尾嗰筆（例如 <code>manifest unknown</code>／<code>not found</code>）。佢會指數退避自動重試，所以「搞掂就刪咗重套」可以即刻觸發新一輪拉取。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">pod2-missing-cm.yaml — env 引用唔存在嘅 ConfigMap</div>
+  <pre><span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: missing-cm</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: busybox:1.36</span>
+<span class="prompt">    command: ["sh", "-c", "sleep 3600"]</span>
+<span class="prompt">    env:</span>
+<span class="prompt">    - name: APP_ENV</span>
+<span class="prompt">      valueFrom:</span>
+<span class="prompt">        configMapKeyRef:</span>
+<span class="prompt">          name: app-env</span>
+<span class="prompt">          key: APP_ENV</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">診斷 2：容器開都開唔到</div>
+  <pre><span class="comment"># 4. 套用：STATUS 出 CreateContainerConfigError——容器連建立都失敗</span>
+<span class="prompt">nano pod2-missing-cm.yaml</span>
+<span class="prompt">kubectl apply -f pod2-missing-cm.yaml</span>
+<span class="prompt">kubectl get pod missing-cm</span>
+
+<span class="comment"># 5. describe 嘅 Events 直接點名：configmap "app-env" not found</span>
+<span class="prompt">kubectl describe pod missing-cm</span>
+
+<span class="comment"># 6. 修復：補返唔見咗嘅 ConfigMap（0006 嘅老朋友）</span>
+<span class="prompt">kubectl create configmap app-env --from-literal=APP_ENV=prod</span>
+<span class="prompt">kubectl delete pod missing-cm --wait=false</span>
+<span class="prompt">kubectl apply -f pod2-missing-cm.yaml</span>
+<span class="prompt">kubectl get pod missing-cm</span>
+<span class="prompt">kubectl exec missing-cm -- sh -c 'echo $APP_ENV'</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">pod3-crash.yaml — 程式一起身就 exit 1</div>
+  <pre><span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: crash-demo</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: busybox:1.36</span>
+<span class="prompt">    command: ["sh", "-c", "echo starting; exit 1"]</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">診斷 3：CrashLoopBackOff</div>
+  <pre><span class="comment"># 7. 套用：CrashLoopBackOff——容器不斷「起身即死」</span>
+<span class="prompt">nano pod3-crash.yaml</span>
+<span class="prompt">kubectl apply -f pod3-crash.yaml</span>
+<span class="prompt">kubectl get pod crash-demo</span>
+
+<span class="comment"># 8. 睇日誌：程式自己印咗 starting 之後 exit——死因寫晒喺度</span>
+<span class="prompt">kubectl logs crash-demo</span>
+
+<span class="comment"># 9. --previous：上一輪容器（死咗嗰個）嘅日誌——CrashLoop 救星</span>
+<span class="prompt">kubectl logs crash-demo --previous</span>
+
+<span class="comment"># 10. 修復：拎走 exit 1，轉返做瞓覺指令</span>
+<span class="prompt">nano pod3-crash.yaml</span>
+<span class="prompt">kubectl delete pod crash-demo --wait=false</span>
+<span class="prompt">kubectl apply -f pod3-crash.yaml</span>
+<span class="prompt">kubectl get pod crash-demo</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">pod4-oom.yaml — 食爆記憶體上限</div>
+  <pre><span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: oom-demo</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: busybox:1.36</span>
+<span class="prompt">    command: ["sh", "-c", "i=$(dd if=/dev/zero bs=1M count=4 2&gt;/dev/null | tr '\\0' a); while :; do i=$i$i; done"]</span>
+<span class="prompt">    resources:</span>
+<span class="prompt">      limits:</span>
+<span class="prompt">        memory: 64Mi</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">診斷 4：OOMKilled（唔係程式自己 crash）</div>
+  <pre><span class="comment"># 11. 套用：字串每圈加倍，幾秒內就撞埋 64Mi 嗰埲牆
+#     （若果你個 busybox 冇將 \0 換成 a、字串係空所以唔爆，
+#       就將 dd 嘅 count=4 改成 count=64 加大起點再試）</span>
+<span class="prompt">nano pod4-oom.yaml</span>
+<span class="prompt">kubectl apply -f pod4-oom.yaml</span>
+<span class="prompt">kubectl get pod oom-demo</span>
+<span class="comment">#    會見到 CrashLoopBackOff 或者不斷重啟</span>
+
+<span class="comment"># 12. describe：Last State 嘅 Reason 係 OOMKilled、Exit Code 137——呢個係「畀人殺」唔係「自爆」</span>
+<span class="prompt">kubectl describe pod oom-demo</span>
+<span class="comment">#    Exit Code 137 = 128 + 9（SIGKILL）＝畀 OOM killer 斬咗</span>
+
+<span class="comment"># 13. 修復：改個應用（將無限膨脹嘅迴圈換返做正常指令）</span>
+<span class="prompt">nano pod4-oom.yaml</span>
+<span class="prompt">kubectl delete pod oom-demo --wait=false</span>
+<span class="prompt">kubectl apply -f pod4-oom.yaml</span>
+<span class="prompt">kubectl get pod oom-demo</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">OOMKilled 同 CrashLoopBackOff 點分？</div>
+  <p>Exit Code 係關鍵線索：<strong>137＝畀 OOM 殺、非零但唔係 137＝程式自己瓜</strong>。記憶體相關仲有個前兆：<code>describe</code> 嘅容器 State 會寫 <code>Reason: OOMKilled</code>，而 <code>logs</code> 成日空空如也（佢嚟唔切印嘢就畀人斬）。見到 137 先check limits，唔好走去追程式邏輯，貼地啲！</p>
+</div>
+
+<div class="diagram-card">
+  <h3>🐳 Docker 老朋友帶路：K8s 除錯 = Docker 除錯放大版</h3>
+  <p>玩過 Docker 嘅話，呢三招你一早識——K8s 只係換個名：</p>
+  <table>
+    <thead>
+      <tr><th>Docker 嗰陣</th><th>K8s 呢度</th><th>記法</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>docker ps</code> 睇 STATUS</td><td><code>kubectl get pod</code> 睇 STATUS</td><td>都係先睇「死成點」</td></tr>
+      <tr><td><code>docker logs 容器</code></td><td><code>kubectl logs pod（-c 名 / --previous）</code></td><td>聽佢自己講遺言</td></tr>
+      <tr><td><code>docker exec -it 容器 sh</code></td><td><code>kubectl exec -it pod -- sh</code></td><td>入去眼見為實</td></tr>
+      <tr><td><code>docker inspect</code> 睇死因</td><td><code>kubectl describe pod</code> 睇 Events＋Reason</td><td>K8s 獨有：連排程原因都寫埋</td></tr>
+    </tbody>
+  </table>
+  <p>一句記晒：<strong>describe = inspect＋事件簿，logs --previous = 攞死者遺書，exec = 入屋搜證。</strong></p>
+</div>
+
+<div class="diagram-card">
+  <h3>🔪 兇案現場：137（畀人殺）vs 非 137（自爆）</h3>
+  <p>兩個死者都係 CrashLoop，但兇手完全唔同——並排睇 <code>describe</code> 嘅驗屍報告：</p>
+  <table>
+    <thead>
+      <tr><th>🔪 畀 OOM 斬（Exit 137）</th><th>💥 自己瓜（Exit 1）</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Reason: OOMKilled</code><br><code>Exit Code: 137</code><br><code>Last State: Terminated</code><br>logs 多數空白（嚟唔切講嘢）<br>→ 唔好追 code，去加 limits／修條無限膨脹迴圈</td>
+        <td><code>Reason: Error</code><br><code>Exit Code: 1</code><br><code>Last State: Terminated</code><br><code>logs --previous</code> 有遺言（starting…）<br>→ 追程式邏輯，改 command／entrypoint</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>查案口訣：<strong>先睇 Exit Code，再睇 Reason，最後先睇 logs 有冇遺言。</strong>137 一定係 128＋9（SIGKILL）——即係系統出手，唔係佢自己想死。</p>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">pod5-readiness.yaml — 探針打錯 port（溫習 0007）</div>
+  <pre><span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: not-ready</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: app</span>
+<span class="prompt">    image: nginx:1.25</span>
+<span class="prompt">    readinessProbe:</span>
+<span class="prompt">      httpGet:</span>
+<span class="prompt">        path: /</span>
+<span class="prompt">        port: 8080</span>
+<span class="prompt">      periodSeconds: 3</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">診斷 5：Running 但唔 Ready</div>
+  <pre><span class="comment"># 14. 套用：STATUS Running 但 READY 0/1——服務明明生勾勾，只係過唔到探針</span>
+<span class="prompt">nano pod5-readiness.yaml</span>
+<span class="prompt">kubectl apply -f pod5-readiness.yaml</span>
+<span class="prompt">kubectl get pod not-ready</span>
+
+<span class="comment"># 15. describe：Events 寫 Readiness probe failed（GET 8080 失敗）</span>
+<span class="prompt">kubectl describe pod not-ready</span>
+
+<span class="comment"># 16. 修復：port 改返 80</span>
+<span class="prompt">nano pod5-readiness.yaml</span>
+<span class="prompt">kubectl delete pod not-ready --wait=false</span>
+<span class="prompt">kubectl apply -f pod5-readiness.yaml</span>
+<span class="prompt">kubectl get pod not-ready</span></pre>
+</div>
+
+<h2>3. 實作 B：logs 技巧同多容器</h2>
+<p>考場成日瀨嘢位：粒 Pod 有兩隻容器，你唔指名睇邊隻，kubectl 即刻彈你轉頭。</p>
+
+<div class="terminal box">
+  <div class="box-title">pod-logs.yaml — 一粒 Pod 兩隻容器</div>
+  <pre><span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Pod</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: logs-demo</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  containers:</span>
+<span class="prompt">  - name: web</span>
+<span class="prompt">    image: busybox:1.36</span>
+<span class="prompt">    command: ["sh", "-c", "while true; do echo web-ok; sleep 2; done"]</span>
+<span class="prompt">  - name: debug</span>
+<span class="prompt">    image: busybox:1.36</span>
+<span class="prompt">    command: ["sh", "-c", "while true; do echo debug-line; sleep 3; done"]</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">多容器嘅 logs 旗標</div>
+  <pre><span class="comment"># 17. 多容器 Pod 一定要 -c 指名睇邊隻（唔畀會報錯叫你指定）</span>
+<span class="prompt">nano pod-logs.yaml</span>
+<span class="prompt">kubectl apply -f pod-logs.yaml</span>
+<span class="prompt">kubectl logs logs-demo -c web --tail=3</span>
+<span class="prompt">kubectl logs logs-demo -c debug --tail=3</span>
+
+<span class="comment"># 18. 其他常用旗標：--tail=N 只睇最尾 N 行；-f 一路跟住睇</span>
+<span class="prompt">kubectl logs -f logs-demo -c web</span>
+<span class="comment">#    Ctrl+C 離開 -f</span>
+
+<span class="comment"># 19. Events 都係破案證據：sort-by 將最新事件排到最底睇</span>
+<span class="prompt">kubectl get events --sort-by=.lastTimestamp | tail -n 10</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾：清乾淨，個叢集返返去「乾淨」狀態</div>
+  <pre><span class="comment"># 20. 刪走今課全部練習物件</span>
+<span class="prompt">kubectl delete pod bad-image missing-cm crash-demo oom-demo not-ready logs-demo</span>
+<span class="prompt">kubectl delete configmap app-env</span>
+<span class="prompt">rm -f pod1-bad-image.yaml pod2-missing-cm.yaml pod3-crash.yaml pod4-oom.yaml pod5-readiness.yaml pod-logs.yaml</span>
+<span class="prompt">kubectl get pods -A</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① 症狀→第一指令對照表（上面嗰張）背到識背。② CrashLoop 三連：<code>get pods</code> → <code>describe</code> 睇 Events → <code>logs</code>；<strong>上次死咗嘅日誌用 <code>--previous</code></strong>（必背）。③ Exit Code：137＝OOM、其他非零＝程式自爆。④ 多容器：<code>logs -c 名</code>、<code>exec -c 名</code>。⑤ 修 Pod 一律「刪咗重套」，唔好諗住熱修 spec。⑥ Pending 先睇 Events：Insufficient memory／cpu、nodeSelector 冇 Node、taint 冇 toleration——全部寫晒喺 Events。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你建立咗「get → describe → logs → exec」嘅系統化除錯流程。</li>
+  <li>你修好五粒經典壞 Pod：ImagePullBackOff、CreateContainerConfigError、CrashLoopBackOff、OOMKilled、READY 0/1。</li>
+  <li>你學識 logs 嘅 --previous／--tail／-f／-c 技巧，仲識用 Events 排序輔助判讀。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">CrashLoopBackOff 想睇重啟前嘅日誌，用咩旗標？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">--tail=N 尾行</button>
+    <button class="quiz-opt">--previous 舊誌</button>
+    <button class="quiz-opt">--follow 跟隨</button>
+    <button class="quiz-opt">--all-pods 全睇</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">容器 Exit Code 137 代表咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">程式正常收工</button>
+    <button class="quiz-opt">映像版本出錯</button>
+    <button class="quiz-opt">畀 OOM 殺咗</button>
+    <button class="quiz-opt">探針檢查失敗</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="3">
+  <p class="quiz-q">Pod 卡住 Pending，第一時間睇邊度？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">容器日誌檔</button>
+    <button class="quiz-opt">入容器檢查</button>
+    <button class="quiz-opt">全域事件表</button>
+    <button class="quiz-opt">描述事件欄</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Pod 層識修喇，下一課將視野拉高：Node 狀態（NotReady／MemoryPressure）、控制平面 static pod、metrics-server（0012 重建之後唔見咗，順手裝返），仲有嗰條「curl 唔通 → DNS → endpoints → NetworkPolicy」嘅端到端故障鏈。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/tasks/debug/debug-application/debug-running-pod/">Debug Running Pods（官方文件）</a>同<a href="https://kubernetes.io/docs/reference/kubectl/cheatsheet/">kubectl Cheat Sheet</a> —— Debug Running Pods 嘅「Examining pod logs」同「Debugging with exec」兩節必讀，約 15 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0017-helm-kustomize-crd-operator.html">← 上一課：Helm 同 Kustomize</a>
+  <a href="0019-troubleshooting-cluster-network.html">下一課：節點同網路排錯 ➔</a>
+</div>
+</div>
+</body>
+</html>

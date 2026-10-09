@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0010 — CoreDNS 同服務發現：靠名搵人</title>
+  <link rel="stylesheet" href="../assets/style.css">
+  <style>
+    .svg-diagram { width: 100%; background: #f8fafc; border: 1px solid var(--border-light); border-radius: 8px; margin: 1.2rem 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+<p class="meta">Phase 3 · 對應考綱：<a href="../reference/cka-domain-map.html">Services &amp; Networking（20%）</a> · 需時約 20 分鐘</p>
+
+<header class="lesson-header">
+  <span class="badge">CKA 第十課 · 搵人靠名</span>
+  <h1>Lesson 0010：CoreDNS 同服務發現：靠名搵人</h1>
+  <p><strong>目標：</strong>搞掂叢集內置 DNS——<a href="../reference/glossary.html">CoreDNS</a>：背熟 Service 個 FQDN 點寫、短名點解同 namespace 先通，再練熟「DNS 層 vs Endpoints 層」兩層排錯，考場分分鐘救你一命！</p>
+</header>
+
+<div class="hk-callout">
+  <strong>💡 點解呢課咁重要？</strong><br>
+  0009 畀咗每班 Pod 一個 VIP，但你總唔可以叫工程師個個背 VIP 嘛。今課將「搵到對方」變成靠名嘅事：識咗短名、全名、跨 namespace 三招，排錯嗰陣先分到係「個名錯咗」定「後面冇人接」——呢個分層係 CKA Troubleshooting 必考位！
+</div>
+
+<h2>1. Service 嘅 FQDN 樣板，背熟佢</h2>
+<p>每個 Service 都會畀 CoreDNS 登記一個 A record，個樣板係咁：</p>
+
+<div class="terminal box">
+  <div class="box-title">FQDN 樣板（背熟佢）</div>
+  <pre>&lt;service&gt;.&lt;namespace&gt;.svc.&lt;cluster-domain&gt;
+     │        │        │        └─ 預設 svc.cluster.local
+     │        │        └─ 固定係 svc（代表 Service）
+     │        └─ Service 身處嘅 namespace
+     └─ Service 個名
+
+hello.default.svc.cluster.local   ← 全名（FQDN）
+hello                              ← 短名：靠 resolv.conf 嘅 search 補尾</pre>
+</div>
+
+<div class="diagram-card">
+  <h3>🔍 CoreDNS 查名流程圖：Pod 內放大鏡 + Normal vs Headless 對照</h3>
+  <svg class="svg-diagram" viewBox="0 0 780 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CoreDNS lookup flow with resolv.conf zoom and normal versus headless contrast">
+    <text x="20" y="24" font-size="13" font-weight="bold" fill="#0969da">上面：Pod 內放大鏡 — 短名點變全名再查</text>
+    <g transform="translate(20, 35)">
+      <rect width="170" height="120" rx="8" fill="#ffffff" stroke="#0969da" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#0969da">1. Pod 打短名</text>
+      <text x="10" y="44" font-size="11" fill="#333">wget http://hello</text>
+      <text x="10" y="62" font-size="11" fill="#333">淨係識個名</text>
+      <text x="10" y="80" font-size="11" fill="#666">撳分機掣：102</text>
+      <text x="10" y="98" font-size="11" fill="#666">同 ns 先直達</text>
+    </g>
+    <g transform="translate(210, 35)">
+      <rect width="240" height="120" rx="8" fill="#fff8c5" stroke="#d4a72c" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#633">2. 讀 resolv.conf</text>
+      <text x="10" y="44" font-size="11" fill="#333">nameserver 10.96.0.10</text>
+      <text x="10" y="62" font-size="11" fill="#333">(kube-dns VIP)</text>
+      <text x="10" y="80" font-size="11" fill="#333">search …default.svc…</text>
+      <text x="10" y="98" font-size="11" fill="#333">options ndots:5</text>
+    </g>
+    <g transform="translate(470, 35)">
+      <rect width="290" height="120" rx="8" fill="#ffffff" stroke="#d4a72c" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#633">3. 砌出 FQDN</text>
+      <text x="10" y="44" font-size="11" fill="#333">hello → hello.default.</text>
+      <text x="10" y="62" font-size="11" fill="#333">svc.cluster.local</text>
+      <text x="10" y="80" font-size="11" fill="#666">點數未夠 5，先套 search</text>
+      <text x="10" y="98" font-size="11" fill="#666">速撥補足全號碼</text>
+    </g>
+    <path d="M 190 95 L 208 95" stroke="#0969da" stroke-width="3"/>
+    <polygon points="208,95 198,90 198,100" fill="#0969da"/>
+    <path d="M 450 95 L 468 95" stroke="#d4a72c" stroke-width="3"/>
+    <polygon points="468,95 458,90 458,100" fill="#d4a72c"/>
+    <text x="20" y="184" font-size="13" font-weight="bold" fill="#1a7f37">中間：UDP 查名 — 去總機問人</text>
+    <g transform="translate(20, 195)">
+      <rect width="355" height="105" rx="8" fill="#f0f7ff" stroke="#0969da" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#0969da">4. UDP 去 kube-dns VIP:53</text>
+      <text x="10" y="44" font-size="11" fill="#333">10.96.0.10:53（門面 Service）</text>
+      <text x="10" y="62" font-size="11" fill="#333">唔係直連某粒 Pod</text>
+      <text x="10" y="80" font-size="11" fill="#666">打去公司總機號碼</text>
+    </g>
+    <g transform="translate(395, 195)">
+      <rect width="365" height="105" rx="8" fill="#f6fbf7" stroke="#1a7f37" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#1a7f37">5. CoreDNS Pod 回答案</text>
+      <text x="10" y="44" font-size="11" fill="#333">kube-system／k8s-app=kube-dns</text>
+      <text x="10" y="62" font-size="11" fill="#333">watch Service／Pod 更新紀錄</text>
+      <text x="10" y="80" font-size="11" fill="#666">總機接線生報分機號</text>
+    </g>
+    <path d="M 375 247 L 393 247" stroke="#0969da" stroke-width="3"/>
+    <polygon points="393,247 383,242 383,252" fill="#0969da"/>
+    <path d="M 600 155 L 600 185 L 200 185 L 200 193" stroke="#d4a72c" stroke-width="2" stroke-dasharray="6 4" fill="none"/>
+    <polygon points="200,193 195,185 205,185" fill="#d4a72c"/>
+    <text x="20" y="330" font-size="13" font-weight="bold" fill="#8250df">下面對照：Normal 一個 VIP vs Headless 一堆 Pod IP</text>
+    <g transform="translate(20, 340)">
+      <rect width="355" height="115" rx="8" fill="#ddf4ff" stroke="#0969da" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#0969da">Normal：A → 1 個 VIP</text>
+      <text x="10" y="44" font-size="11" fill="#333">hello → 10.96.123.45</text>
+      <text x="10" y="62" font-size="11" fill="#333">之後靠 kube-proxy 轉發</text>
+      <text x="10" y="80" font-size="11" fill="#666">總機一個代表號，轉駁隨機接線</text>
+      <text x="10" y="98" font-size="11" fill="#666">nslookup 回 1 行 Address</text>
+    </g>
+    <g transform="translate(395, 340)">
+      <rect width="365" height="115" rx="8" fill="#f5f0ff" stroke="#8250df" stroke-width="2"/>
+      <text x="10" y="24" font-size="12" font-weight="bold" fill="#8250df">Headless：A → N 個 Pod IP</text>
+      <text x="10" y="44" font-size="11" fill="#333">web-hd → 10.244.0.5, 10.244.1.7</text>
+      <text x="10" y="62" font-size="11" fill="#333">唔經 VIP，客自己揀直撥</text>
+      <text x="10" y="80" font-size="11" fill="#666">總機直接畀晒分機直線</text>
+      <text x="10" y="98" font-size="11" fill="#666">nslookup 回 N 行 Address</text>
+    </g>
+    <rect x="20" y="470" width="740" height="68" rx="6" fill="#fff8c5" stroke="#d4a72c" stroke-width="1.5"/>
+    <text x="35" y="494" font-size="12" fill="#633">☎ 公司總機比喻：CoreDNS＝總機接線生；resolv.conf 嘅 search＝分機速撥（撳 102 自動補 9 字頭全號）；</text>
+    <text x="35" y="516" font-size="12" fill="#633">Normal Service＝公司代表號（1 個）；Headless＝直接畀你 N 條分機直線，唔經總機轉駁。</text>
+    <rect x="20" y="548" width="740" height="68" rx="6" fill="#fff1f2" stroke="#cf222e" stroke-width="1.5"/>
+    <text x="35" y="572" font-size="12" fill="#7a1f1f">跨 namespace 一定全名：api.team-a.svc.cluster.local（短名 api 喺 default 搵唔到）</text>
+    <text x="35" y="594" font-size="12" fill="#7a1f1f">口訣：先 nslookup 睇名（DNS 層），後 get endpoints 睇人（後端層），兩層通先睇 Pod。</text>
+  </svg>
+  <p><strong>點讀呢幅圖：</strong>由上而下跟住粒封包行：Pod 內砌名 → UDP 問總機 → 總機報號；再睇下面對照——同一個 <code>nslookup</code>，Normal 回 1 個 VIP，Headless 回成堆 Pod IP。</p>
+</div>
+
+<p>Pod 入面嘅 <code>/etc/resolv.conf</code> 係 kubelet 自動整嘅：<code>nameserver</code> 指住 kube-system 嘅 <code>kube-dns</code> Service（CoreDNS 嘅門面），<code>search</code> 就列住一堆自動補尾嘅後綴（多數有 <code>&lt;pod 嘅 namespace&gt;.svc.cluster.local</code> 等）——呢個就係「同 namespace 打短名就通」嘅原因。另外一個細節：<code>ndots:5</code> 代表個名<strong>有 5 個點（含）以上</strong>先當 FQDN 查，否則先套 search 後綴試下。</p>
+
+<div class="terminal box">
+  <div class="box-title">cat /etc/resolv.conf 逐行解（Pod 內真 output，加註）</div>
+  <pre><span class="prompt">kubectl exec client -- cat /etc/resolv.conf</span>
+<span class="comment"># nameserver 10.96.0.10   ← 公司總機號碼：kube-dns Service 嘅 VIP，唔係某粒 CoreDNS Pod 嘅 IP</span>
+<span class="comment"># search default.svc.cluster.local svc.cluster.local cluster.local  ← 分機速撥表：短名 hello 會逐個補尾試</span>
+<span class="comment"># options ndots:5         ← 夠 5 點先當全號（FQDN）直查；唔夠點＝先當分機撳速撥</span></pre>
+</div>
+
+<h2>2. A record 同 SRV record</h2>
+<ul>
+  <li><strong>A record</strong>：Service 名 → VIP。Headless Service（0009 嗰個 <code>clusterIP: None</code>）就回佢身後每粒 Pod 嘅 IP——呢個係數據庫類 workload「直連每粒 Pod」嘅機制。</li>
+  <li><strong>SRV record</strong>：Service 有「具名 port」嗰陣，<code>_&lt;port-name&gt;._&lt;protocol&gt;.&lt;svc&gt;...</code> 會回「邊個 port 有服務」。</li>
+</ul>
+<p>CoreDNS 係一堆跑喺 kube-system 嘅 Deployment，佢 watch 住 Service／Pod 變化嚟更新紀錄；設定收喺 <code>ConfigMap/coredns</code> 嘅 <strong>Corefile</strong> 入面。今課部機沿用 0009 嗰個雙節點叢集。</p>
+
+<h2>3. 實作 A：短名、全名、跨 namespace</h2>
+
+<div class="terminal box">
+  <div class="box-title">準備解到名嘅服務同客</div>
+  <pre><span class="comment"># 1. 確認 0009 嗰粒 client pod 仲喺度兼 Running（NotFound 或 Completed 都重建）</span>
+<span class="prompt">kubectl get pod client</span>
+<span class="comment">#    如果唔係 Running：kubectl delete pod client --ignore-not-found
+#    kubectl run client --image=busybox:1.36 --restart=Never -- sleep 3600
+#    kubectl wait --for=condition=Ready pod/client</span>
+
+<span class="comment"># 2. 佈粒要畀人解名嘅 nginx 服務</span>
+<span class="prompt">kubectl create deployment hello --image=nginx:1.25 --replicas=1</span>
+<span class="prompt">kubectl expose deployment hello --port=80</span>
+<span class="prompt">kubectl rollout status deployment/hello</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">解名：全名、短名、resolv.conf</div>
+  <pre><span class="comment"># 3. 睇 Pod 內嘅 DNS 設定：nameserver = kube-dns、search 幫你補尾</span>
+<span class="prompt">kubectl exec client -- cat /etc/resolv.conf</span>
+
+<span class="comment"># 4. 全名解名（busybox 嘅 nslookup 唔食 search 自動補，畀全名最穩陣）</span>
+<span class="prompt">kubectl exec client -- nslookup hello.default.svc.cluster.local</span>
+
+<span class="comment"># 5. 短名「hello」會通，係因為 search 欄自動補上 default.svc.cluster.local</span>
+<span class="prompt">kubectl exec client -- wget -qO- http://hello | head -n 3</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">跨 namespace：淨係可以用全名</div>
+  <pre><span class="comment"># 6. 開個 team-a namespace，放支 api 服務</span>
+<span class="prompt">kubectl create ns team-a</span>
+<span class="prompt">kubectl -n team-a create deployment api --image=nginx:1.25 --replicas=1</span>
+<span class="prompt">kubectl -n team-a expose deployment api --port=80</span>
+
+<span class="comment"># 7. 由 default namespace 用全名打過去</span>
+<span class="prompt">kubectl exec client -- nslookup api.team-a.svc.cluster.local</span>
+<span class="prompt">kubectl exec client -- wget -qO- http://api.team-a.svc.cluster.local | head -n 3</span>
+<span class="comment">#    短名 http://api 喺呢度唔通——client 嘅 search 只會補 default 嘅尾</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>第 4–5 步嘅對照就係 DNS 縮寫機制嘅全部：<strong>全名一定通；短名通唔通睇 search 欄</strong>。第 7 步係跨 namespace 嘅唯一寫法：<code>服務名.namespace.svc.cluster.local</code>。想喺第二個 namespace 用短名？將 Pod 起去同一個 namespace，或者自己改 <code>dnsConfig</code>——考試知「預設短名淨係喺本 namespace 有效」就夠。</p>
+</div>
+
+<h2>4. 實作 B：故障分層——名錯 vs 後端吉</h2>
+<p>跟住嚟演 CKA 最鍾意考嘅「分層判斷」：同樣係「連唔到」，係 <strong>DNS 搵唔到個名</strong>，定係 <strong>DNS 搵到但冇後端接得</strong>？兩層症狀完全唔同，唔好撈亂。</p>
+
+<div class="terminal box">
+  <div class="box-title">第一層：名打錯（NXDOMAIN）</div>
+  <pre><span class="comment"># 8. 個名唔存在：CoreDNS 回 NXDOMAIN——呢個係「DNS 層」嘅問題</span>
+<span class="prompt">kubectl exec client -- nslookup hello.wrong.svc.cluster.local</span>
+<span class="comment">#    output 會有 "can't find" / NXDOMAIN</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">第二層：Service 存在但 selector 射唔中任何 Pod</div>
+  <pre><span class="comment"># 9. 整粒 selector 對唔中任何 Pod 嘅 Service（個名叫 ghost）</span>
+<span class="prompt">kubectl create -f - &lt;&lt;'EOF'</span>
+<span class="prompt">apiVersion: v1</span>
+<span class="prompt">kind: Service</span>
+<span class="prompt">metadata:</span>
+<span class="prompt">  name: ghost</span>
+<span class="prompt">spec:</span>
+<span class="prompt">  selector:</span>
+<span class="prompt">    app: no-such-app</span>
+<span class="prompt">  ports:</span>
+<span class="prompt">  - port: 80</span>
+<span class="prompt">EOF</span>
+
+<span class="comment"># 10. DNS 解到 ghost（Service 存在就有 A record）——DNS 層正常</span>
+<span class="prompt">kubectl exec client -- nslookup ghost.default.svc.cluster.local</span>
+
+<span class="comment"># 11. 但 Endpoints 吉嘅——冇後端，連線被拒</span>
+<span class="prompt">kubectl get endpoints ghost</span>
+<span class="prompt">kubectl exec client -- wget -qO- -T 3 http://ghost || echo '-- connection refused --'</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">你應該觀察到咩</div>
+  <p>對返第 8 同 10–11 步：<strong>名打錯 ＝ DNS 直接話查無此人（NXDOMAIN）；selector 冇射中 ＝ DNS 話有呢個 Service，但 Endpoints 空空如也、TCP 連唔上。</strong>除錯次序從此定死：先 <code>nslookup</code> 確認 DNS 層，再 <code>get endpoints</code> 確認後端層——兩層都通先輪到睇 Pod 本身。0019 會將呢條鏈駁上 NetworkPolicy。</p>
+</div>
+
+<h2>4a. 故障對照表：死喺邊層，一眼分</h2>
+<table>
+  <thead>
+    <tr><th>症狀（terminal 真 output）</th><th>死喺邊層</th><th>解讀＋下一手</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>nslookup hello.wrong.svc.cluster.local</code><br><code>** server can't find hello.wrong…: NXDOMAIN</code></td>
+      <td><strong>DNS 層死 ☠️</strong><br>總機話冇呢個分機</td>
+      <td>個名根本唔存在（打錯字／Service 未起／namespace 錯）。下一手：<code>get svc</code> 對名＋namespace，唔使睇 endpoints 住。</td>
+    </tr>
+    <tr>
+      <td><code>nslookup ghost.default.svc.cluster.local</code><br><code>Address: 10.96.77.88</code>（有回音）<br><code>wget http://ghost</code> → <code>connection refused</code>／卡住<br><code>get endpoints ghost</code> → <code>&lt;none&gt;</code></td>
+      <td><strong>DNS 生、後端死 🔇</strong><br>總機報咗號，但分機冇人聽</td>
+      <td>Service 存在所以有 A record，但 selector 冇射中任何 Ready Pod。下一手：<code>get endpoints</code>＋查 selector／readiness（0007 回帶）。</td>
+    </tr>
+  </tbody>
+</table>
+<p><strong>一句分生死：</strong>冇 Address＝總機都唔識你（DNS 層）；有 Address 但連唔上＝總機識你但後面冇人（後端層）。考場見到 <code>NXDOMAIN</code> 三個字，即刻答「名錯／Service 唔存在」，唔好走去 restart Pod！</p>
+
+<h2>5. 實作 C：睇下 CoreDNS 本尊</h2>
+
+<div class="terminal box">
+  <div class="box-title">CoreDNS 嘅 Pod 同服務</div>
+  <pre><span class="comment"># 12. CoreDNS 以 Deployment 跑喺 kube-system，label 係 k8s-app=kube-dns</span>
+<span class="prompt">kubectl get pods -n kube-system -l k8s-app=kube-dns</span>
+
+<span class="comment"># 13. Pod 嘅 resolv.conf 指住嘅 kube-dns Service（ClusterIP）</span>
+<span class="prompt">kubectl get svc -n kube-system kube-dns</span>
+
+<span class="comment"># 14. Corefile：CoreDNS 嘅設定檔（kubernetes 嗰段負責 cluster.local 嘅紀錄）</span>
+<span class="prompt">kubectl get configmap -n kube-system coredns -o yaml</span>
+<span class="comment">#    睇到 kubernetes cluster.local in-addr.arpa ip6.arpa 嗰幾行，就係佢</span></pre>
+</div>
+
+<div class="terminal box">
+  <div class="box-title">收尾</div>
+  <pre><span class="comment"># 15. 刪走今課練習資源（client pod 都一齊收工）</span>
+<span class="prompt">kubectl delete deployment hello</span>
+<span class="prompt">kubectl delete svc hello ghost</span>
+<span class="prompt">kubectl delete ns team-a</span>
+<span class="prompt">kubectl delete pod client</span>
+
+<span class="comment"># 16. 課尾確認：叢集乾淨、雙節點</span>
+<span class="prompt">kubectl get pods,svc</span>
+<span class="prompt">kubectl get nodes</span></pre>
+</div>
+
+<div class="tip box">
+  <div class="box-title">考場小抄</div>
+  <p>① FQDN 樣板：<code>&lt;svc&gt;.&lt;ns&gt;.svc.cluster.local</code>；同 namespace 可以用短名（search 幫你補）。② 除錯兩層：<code>nslookup 個名</code>（DNS 層）→ <code>get endpoints</code>（後端層）→ 再睇 Pod。③ DNS 有回應唔代表用得：<strong>NXDOMAIN＝名錯；解到但連唔上＝後端吉或 NetworkPolicy</strong>。④ 入 pod 睇設定：<code>cat /etc/resolv.conf</code>（nameserver 應該係 kube-dns）。⑤ headless 嘅 A record 直接回 Pod IP 群。⑥ CoreDNS 設定檔喺 ConfigMap/coredns（Corefile）。</p>
+</div>
+
+<h2>本課戰果</h2>
+<ul>
+  <li>你背熟 Service FQDN 樣板，仲用短名／全名／跨 namespace 三種方法解名成功。</li>
+  <li>你親手整出「NXDOMAIN」同「Endpoints 吉」兩種故障，建立 DNS 層同後端層嘅分層除錯。</li>
+  <li>你搵到 CoreDNS 嘅 Pod、kube-dns Service 同 Corefile ConfigMap。</li>
+</ul>
+
+<h2>小測驗</h2>
+
+<div class="quiz" data-answer="1">
+  <p class="quiz-q">Service hello 喺 team-a namespace，全名係咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">hello.svc.team-a</button>
+    <button class="quiz-opt">hello.team-a.svc.cluster.local</button>
+    <button class="quiz-opt">team-a.hello.svc</button>
+    <button class="quiz-opt">hello.cluster.local</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="2">
+  <p class="quiz-q">nslookup 回 NXDOMAIN 代表咩？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">後端 Pod 瓜咗</button>
+    <button class="quiz-opt">NetworkPolicy 擋住</button>
+    <button class="quiz-opt">個名唔存在</button>
+    <button class="quiz-opt">個 port 錯咗</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<div class="quiz" data-answer="0">
+  <p class="quiz-q">短名喺同 namespace 通到，靠 resolv.conf 邊行？</p>
+  <div class="quiz-opts">
+    <button class="quiz-opt">search</button>
+    <button class="quiz-opt">nameserver</button>
+    <button class="quiz-opt">ndots</button>
+    <button class="quiz-opt">options</button>
+  </div>
+  <p class="quiz-feedback" aria-live="polite"></p>
+</div>
+
+<script src="../assets/quiz.js"></script>
+
+<h2>下一步</h2>
+<p>Pod 之間用 Service 名互相搵到喇。下堂將個門口開到「叢集外面」：<a href="../reference/glossary.html">Ingress</a>——用「網址 ＋ 路徑」將外面 HTTP/HTTPS 流量帶去唔同 Service（L7），會重建個開好 host port 嘅叢集再裝 ingress-nginx。仲會預告 <a href="../reference/glossary.html">Gateway API</a> 企喺邊。</p>
+<p>而家：<a href="../reference/glossary.html">複習詞彙表</a> · <a href="../reference/cka-domain-map.html">睇考綱地圖</a></p>
+
+<div class="lesson-footer">
+  <p><strong>建議嘅主要來源：</strong><a href="https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/">DNS for Services and Pods（官方文件）</a> —— 今課嘅權威版。重點睇「DNS records」嗰節（Service A/AAAA、SRV、Pod 嘅 hostname），約 10 分鐘。</p>
+  <p><strong>有唔明？</strong>任何術語、指令定概念卡住，直接問我——複述、畫圖、加練習都得。</p>
+</div>
+
+<div class="lesson-nav">
+  <a href="0009-service-types-endpoints.html">← 上一課：Service 同 Endpoints</a>
+  <a href="0011-ingress-gateway-api.html">下一課：Ingress 同 Gateway API ➔</a>
+</div>
+</div>
+</body>
+</html>
